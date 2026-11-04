@@ -9,11 +9,13 @@ export interface TokenUsage {
 
 /**
  * Events emitted by the agent kernel to drive a UI (Ink or print mode).
- * M0 covers the text-only streaming path; tool/orchestration events are added in
- * later milestones.
+ * Tool events carry raw inputs/outputs; rendering decisions live in the UI.
  */
 export type AgentEvent =
   | { type: 'start'; model: ModelSpec }
   | { type: 'text-delta'; delta: string }
+  | { type: 'tool-call'; toolName: string; input: unknown }
+  | { type: 'tool-result'; toolName: string; input: unknown; output: unknown }
+  | { type: 'tool-error'; toolName: string; error: Error }
   | { type: 'finish'; text: string; usage: TokenUsage; costUsd: number }
   | { type: 'error'; error: Error };
