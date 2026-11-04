@@ -1,4 +1,4 @@
-import type { LanguageModel } from 'ai';
+import type { EmbeddingModel, LanguageModel } from 'ai';
 
 /**
  * Provider identifier. Known providers get literal types; arbitrary strings are
@@ -33,5 +33,7 @@ export interface ModelProvider {
   apiKeyEnvVar: string;
   /** Resolve a callable language model for the given model id. */
   languageModel(modelId: string): LanguageModel;
+  /** Resolve an embedding model, when the provider offers one. */
+  embeddingModel?(modelId: string): EmbeddingModel;
   capabilities(modelId: string): ModelCapabilities;
 }

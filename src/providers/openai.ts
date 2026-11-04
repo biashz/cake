@@ -1,5 +1,5 @@
 import { createOpenAI } from '@ai-sdk/openai';
-import type { LanguageModel } from 'ai';
+import type { EmbeddingModel, LanguageModel } from 'ai';
 import type { ModelCapabilities, ModelProvider } from './types.js';
 
 export interface OpenAIAdapterSettings {
@@ -24,6 +24,9 @@ export function createOpenAIProvider(settings: OpenAIAdapterSettings = {}): Mode
     apiKeyEnvVar: 'OPENAI_API_KEY',
     languageModel(modelId: string): LanguageModel {
       return client(modelId);
+    },
+    embeddingModel(modelId: string): EmbeddingModel {
+      return client.embedding(modelId);
     },
     capabilities(_modelId: string): ModelCapabilities {
       return {

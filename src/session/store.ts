@@ -1,14 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
-import type { DatabaseSync as DatabaseHandle } from 'node:sqlite';
 import type { ModelMessage } from 'ai';
-
-// esbuild rewrites `node:sqlite` to a bare `sqlite` import it cannot resolve,
-// so load the builtin through require, which the bundler leaves alone.
-const loadBuiltin = createRequire(import.meta.url);
-const { DatabaseSync } = loadBuiltin('node:sqlite') as typeof import('node:sqlite');
+import { type Database, DatabaseSync } from './sqlite.js';
 
 export interface SessionMeta {
   id: string;
@@ -84,9 +78,9 @@ const SCHEMA = `
 
 /** Project-local session persistence backed by node:sqlite. */
 export class SessionStore {
-  private readonly db: DatabaseHandle;
+  private readonly db: Database;
 
-  private constructor(db: DatabaseHandle) {
+  private constructor(db: Database) {
     this.db = db;
     this.db.exec(SCHEMA);
   }

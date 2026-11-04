@@ -1,4 +1,4 @@
-import type { LanguageModel } from 'ai';
+import type { EmbeddingModel, LanguageModel } from 'ai';
 import type { CakeConfig } from '../config/config.js';
 import { createAnthropicProvider } from './anthropic.js';
 import { resolveApiKey } from './keys.js';
@@ -40,6 +40,14 @@ export class ProviderRegistry {
 
   resolveModel(spec: ModelSpec): LanguageModel {
     return this.get(spec.provider).languageModel(spec.modelId);
+  }
+
+  /** First registered provider that can embed with this model id. */
+  resolveEmbeddingModel(modelId: string): EmbeddingModel | undefined {
+    for (const provider of this.providers.values()) {
+      if (provider.embeddingModel) return provider.embeddingModel(modelId);
+    }
+    return undefined;
   }
 }
 

@@ -5,6 +5,7 @@ export default defineConfig({
   format: ['esm'],
   target: 'node22',
   platform: 'node',
+  external: ['web-tree-sitter', '@vscode/tree-sitter-wasm'],
   sourcemap: true,
   clean: true,
   dts: false,

@@ -8,6 +8,9 @@ import { expandFileReferences } from '../core/mentions.js';
 import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
+import { expandCodebaseMention } from '../rag/codebase-mention.js';
+import type { Embedder } from '../rag/embedder.js';
+import { createRagTools } from '../rag/tools.js';
 import type { SessionMeta, SessionStore } from '../session/store.js';
 import { buildToolSet, createDefaultTools } from '../tools/registry.js';
 import type {
@@ -43,6 +46,7 @@ export interface AppProps {
   session: SessionMeta;
   initialMessages: ModelMessage[];
   maxContext: number;
+  embedder?: Embedder;
 }
 
 const COMMANDS = [
@@ -60,7 +64,7 @@ function preview(value: unknown, max = 160): string {
 }
 
 export function App(props: AppProps) {
-  const { registry, permissionMode, rules, system, store, maxContext } = props;
+  const { registry, permissionMode, rules, system, store, maxContext, embedder } = props;
   const { exit } = useApp();
   const [model, setModel] = useState<ModelSpec>(props.model);
   const [session, setSession] = useState<SessionMeta>(props.session);
@@ -165,7 +169,19 @@ export function App(props: AppProps) {
 
     let pending: ModelMessage[] = [...historyRef.current, { role: 'user', content: typed }];
     try {
-      const expanded = await expandFileReferences(typed, process.cwd());
+      const cwd = process.cwd();
+      const codebase = await expandCodebaseMention(typed, {
+        cwd,
+        embedder,
+        abortSignal: controller.signal,
+      });
+      if (codebase.results > 0) {
+        addEntry({ role: 'info', text: `codebase: attached ${codebase.results} chunks` });
+      }
+      if (codebase.note) {
+        addEntry({ role: 'info', text: `codebase: ${codebase.note}` });
+      }
+      const expanded = await expandFileReferences(codebase.text, cwd);
       if (expanded.files.length > 0) {
         addEntry({ role: 'info', text: `attached ${expanded.files.join(', ')}` });
       }
@@ -196,7 +212,10 @@ export function App(props: AppProps) {
     }
 
     const ctx: ToolContext = { cwd: process.cwd(), askPermission, log: () => {} };
-    const tools = buildToolSet(createDefaultTools(), ctx, permissionMode, rules);
+    const defaultTools = embedder
+      ? [...createDefaultTools(), ...createRagTools(embedder)]
+      : createDefaultTools();
+    const tools = buildToolSet(defaultTools, ctx, permissionMode, rules);
 
     let acc = '';
     let sawToolCall = false;

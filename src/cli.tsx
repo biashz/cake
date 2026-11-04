@@ -16,6 +16,9 @@ import type { PermissionRules } from './permissions/rules.js';
 import { loadSettings } from './permissions/settings.js';
 import { createDefaultRegistry, type ProviderRegistry } from './providers/registry.js';
 import type { ModelSpec } from './providers/types.js';
+import { expandCodebaseMention } from './rag/codebase-mention.js';
+import { createEmbedder, DEFAULT_EMBEDDING_MODEL, type Embedder } from './rag/embedder.js';
+import { createRagTools } from './rag/tools.js';
 import { defaultSessionFile, type SessionMeta, SessionStore } from './session/store.js';
 import { buildToolSet, createDefaultTools } from './tools/registry.js';
 import type { PermissionMode, ToolContext } from './tools/types.js';
@@ -92,6 +95,7 @@ async function main(): Promise<void> {
   }
   const history = resumed ? store.messages(session.id) : [];
   const maxContext = provider.capabilities(model.modelId).maxContext;
+  const embedder = resolveEmbedder(registry);
 
   const prompt = positionals.join(' ').trim();
   const headless = values.print || prompt.length > 0;
@@ -109,6 +113,7 @@ async function main(): Promise<void> {
       mode,
       rules: settings.permissions,
       maxContext,
+      embedder,
     });
     return;
   }
@@ -128,6 +133,7 @@ async function main(): Promise<void> {
       session={session}
       initialMessages={history}
       maxContext={maxContext}
+      embedder={embedder}
     />,
     { exitOnCtrlC: false },
   );
@@ -154,6 +160,17 @@ function resolvePermissionMode(value: string | undefined, yes: boolean): Permiss
   return value as PermissionMode;
 }
 
+/** Embeddings come from OpenAI; semantic tools stay off when that key is absent. */
+function resolveEmbedder(registry: ProviderRegistry): Embedder | undefined {
+  if (!registry.getApiKey('openai')) return undefined;
+  const model = registry.resolveEmbeddingModel(DEFAULT_EMBEDDING_MODEL);
+  return model ? createEmbedder(model) : undefined;
+}
+
+function withRagTools(embedder: Embedder | undefined) {
+  return embedder ? [...createDefaultTools(), ...createRagTools(embedder)] : createDefaultTools();
+}
+
 interface HeadlessOptions {
   registry: ProviderRegistry;
   model: ModelSpec;
@@ -165,11 +182,23 @@ interface HeadlessOptions {
   mode: PermissionMode;
   rules: PermissionRules;
   maxContext: number;
+  embedder?: Embedder;
 }
 
 async function runHeadless(options: HeadlessOptions): Promise<void> {
-  const { registry, model, system, store, session, history, prompt, mode, rules, maxContext } =
-    options;
+  const {
+    registry,
+    model,
+    system,
+    store,
+    session,
+    history,
+    prompt,
+    mode,
+    rules,
+    maxContext,
+    embedder,
+  } = options;
   const cwd = process.cwd();
   const controller = new AbortController();
   const onSigint = () => controller.abort();
@@ -188,7 +217,18 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
   };
 
   try {
-    const expanded = await expandFileReferences(prompt, cwd);
+    const codebase = await expandCodebaseMention(prompt, {
+      cwd,
+      embedder,
+      abortSignal: controller.signal,
+      onProgress: (message) => process.stderr.write(`[index] ${message}\n`),
+    });
+    if (codebase.results > 0) {
+      process.stderr.write(`[codebase] attached ${codebase.results} chunks\n`);
+    }
+    if (codebase.note) process.stderr.write(`[codebase] ${codebase.note}\n`);
+
+    const expanded = await expandFileReferences(codebase.text, cwd);
     if (expanded.files.length > 0) {
       process.stderr.write(`[files] attached ${expanded.files.join(', ')}\n`);
     }
@@ -216,7 +256,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
       {
         model,
         system,
-        tools: buildToolSet(createDefaultTools(), ctx, mode, rules),
+        tools: buildToolSet(withRagTools(embedder), ctx, mode, rules),
         messages,
         abortSignal: controller.signal,
         onEvent: (event) => {
@@ -289,6 +329,7 @@ function printHelp(): void {
       '',
       'Input:',
       '  @path/to/file             Attach a file to the prompt',
+      '  @codebase                 Retrieve relevant code chunks (semantic search)',
       '  /help  /clear  /model <id>  /cost  /exit    Interactive commands',
       '',
       'Project context:',
