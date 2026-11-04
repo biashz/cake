@@ -167,4 +167,40 @@ describe('runAgent multi-step tool loop', () => {
     expect(errors).toHaveLength(1);
     expect(String((errors[0] as { error: Error }).error.message)).toMatch(/denied/i);
   });
+
+  it('passes the system prompt as instructions, not as a history message', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 't1' },
+              { type: 'text-delta', id: 't1', delta: 'ok' },
+              { type: 'text-end', id: 't1' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: undefined },
+                usage: usage(3, 1),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+
+    const result = await runAgent(
+      {
+        model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+        system: 'be brief',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      registryFor(model),
+    );
+
+    const prompt = model.doStreamCalls[0]?.prompt ?? [];
+    expect(prompt[0]).toMatchObject({ role: 'system', content: 'be brief' });
+    expect(prompt.filter((message) => message.role === 'system')).toHaveLength(1);
+    expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
+  });
 });

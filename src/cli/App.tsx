@@ -1,12 +1,14 @@
 import type { ModelMessage } from 'ai';
 import { Box, Text, useApp, useInput } from 'ink';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { runAgent } from '../core/agent.js';
+import { createHistorySummarizer, maybeCompress } from '../core/context.js';
 import { formatCost } from '../core/cost.js';
-import { SYSTEM_PROMPT } from '../core/prompt.js';
+import { expandFileReferences } from '../core/mentions.js';
 import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
+import type { SessionMeta, SessionStore } from '../session/store.js';
 import { buildToolSet, createDefaultTools } from '../tools/registry.js';
 import type {
   PermissionDecision,
@@ -36,7 +38,20 @@ export interface AppProps {
   model: ModelSpec;
   permissionMode: PermissionMode;
   rules: PermissionRules;
+  system: string;
+  store: SessionStore;
+  session: SessionMeta;
+  initialMessages: ModelMessage[];
+  maxContext: number;
 }
+
+const COMMANDS = [
+  '/help            show this list',
+  '/clear           start a new session',
+  '/model <id>      switch model id (same provider)',
+  '/cost            session token and cost totals',
+  '/exit            quit (or Ctrl+C)',
+].join('\n');
 
 function preview(value: unknown, max = 160): string {
   const raw = typeof value === 'string' ? value : JSON.stringify(value ?? '');
@@ -44,23 +59,76 @@ function preview(value: unknown, max = 160): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
-export function App({ registry, model, permissionMode, rules }: AppProps) {
+export function App(props: AppProps) {
+  const { registry, permissionMode, rules, system, store, maxContext } = props;
   const { exit } = useApp();
+  const [model, setModel] = useState<ModelSpec>(props.model);
+  const [session, setSession] = useState<SessionMeta>(props.session);
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState('');
   const [busy, setBusy] = useState(false);
   const [approval, setApproval] = useState<PendingApproval | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const historyRef = useRef<ModelMessage[]>([]);
+  const historyRef = useRef<ModelMessage[]>(props.initialMessages);
   const nextId = useRef(0);
   const approvalQueue = useRef<Promise<void>>(Promise.resolve());
   const abortedRef = useRef(false);
+
+  useEffect(() => () => store.close(), [store]);
 
   const addEntry = (entry: Omit<TranscriptEntry, 'id'>) => {
     const id = nextId.current++;
     setEntries((prev) => [...prev, { ...entry, id }]);
   };
+
+  function handleCommand(raw: string): void {
+    const [name = '', ...rest] = raw.slice(1).split(/\s+/);
+    const arg = rest.join(' ').trim();
+    switch (name) {
+      case 'exit':
+      case 'quit':
+        exit();
+        return;
+      case 'help':
+        addEntry({ role: 'info', text: COMMANDS });
+        return;
+      case 'clear': {
+        const next = store.create({
+          cwd: process.cwd(),
+          provider: model.provider,
+          model: model.modelId,
+        });
+        setSession(next);
+        historyRef.current = [];
+        setEntries([]);
+        setStreaming('');
+        addEntry({ role: 'info', text: `new session ${next.id.slice(0, 8)}` });
+        return;
+      }
+      case 'model': {
+        if (!arg) {
+          addEntry({ role: 'info', text: `model: ${model.provider}/${model.modelId}` });
+          return;
+        }
+        const next: ModelSpec = { ...model, modelId: arg };
+        setModel(next);
+        store.updateModel(session.id, next.provider, next.modelId);
+        addEntry({ role: 'info', text: `model → ${next.provider}/${next.modelId}` });
+        return;
+      }
+      case 'cost': {
+        const meta = store.get(session.id) ?? session;
+        addEntry({
+          role: 'info',
+          text: `session ${meta.id.slice(0, 8)} · ${meta.totalTokens} tokens · ${formatCost(meta.costUsd)}`,
+        });
+        return;
+      }
+      default:
+        addEntry({ role: 'info', text: `unknown command /${name} — try /help` });
+    }
+  }
 
   function askPermission(request: PermissionRequest): Promise<PermissionDecision> {
     if (abortedRef.current) return Promise.resolve('deny');
@@ -79,21 +147,54 @@ export function App({ registry, model, permissionMode, rules }: AppProps) {
   }
 
   async function submit() {
-    const prompt = input.trim();
-    if (!prompt || busy) return;
-    if (prompt === '/exit' || prompt === '/quit') {
-      exit();
+    const typed = input.trim();
+    if (!typed || busy) return;
+    if (typed.startsWith('/')) {
+      setInput('');
+      handleCommand(typed);
       return;
     }
 
     setInput('');
     setBusy(true);
     abortedRef.current = false;
-    addEntry({ role: 'user', text: prompt });
-    historyRef.current = [...historyRef.current, { role: 'user', content: prompt }];
+    addEntry({ role: 'user', text: typed });
 
     const controller = new AbortController();
     abortRef.current = controller;
+
+    let pending: ModelMessage[] = [...historyRef.current, { role: 'user', content: typed }];
+    try {
+      const expanded = await expandFileReferences(typed, process.cwd());
+      if (expanded.files.length > 0) {
+        addEntry({ role: 'info', text: `attached ${expanded.files.join(', ')}` });
+      }
+      if (expanded.missing.length > 0) {
+        addEntry({ role: 'info', text: `not found: ${expanded.missing.join(', ')}` });
+      }
+      pending = [...historyRef.current, { role: 'user', content: expanded.text }];
+      const compressed = await maybeCompress(pending, {
+        maxTokens: maxContext,
+        summarize: createHistorySummarizer(registry, model, controller.signal),
+      });
+      pending = compressed.messages;
+      if (compressed.compressed) {
+        addEntry({ role: 'info', text: 'context compressed: older history summarized' });
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        addEntry({ role: 'info', text: `context preparation skipped: ${(err as Error).message}` });
+      }
+    }
+
+    if (controller.signal.aborted) {
+      addEntry({ role: 'info', text: '(cancelled)' });
+      setStreaming('');
+      setBusy(false);
+      abortRef.current = null;
+      return;
+    }
+
     const ctx: ToolContext = { cwd: process.cwd(), askPermission, log: () => {} };
     const tools = buildToolSet(createDefaultTools(), ctx, permissionMode, rules);
 
@@ -110,9 +211,9 @@ export function App({ registry, model, permissionMode, rules }: AppProps) {
       const result = await runAgent(
         {
           model,
-          system: SYSTEM_PROMPT,
+          system,
           tools,
-          messages: historyRef.current,
+          messages: pending,
           abortSignal: controller.signal,
           onEvent: (event) => {
             switch (event.type) {
@@ -153,6 +254,14 @@ export function App({ registry, model, permissionMode, rules }: AppProps) {
       );
 
       historyRef.current = result.messages;
+      store.setTitleIfEmpty(session.id, typed);
+      store.saveMessages(session.id, result.messages);
+      store.addUsage(session.id, {
+        totalTokens: result.usage.totalTokens,
+        costUsd: result.costUsd,
+      });
+      const updated = store.get(session.id);
+      if (updated) setSession(updated);
       const meta = `${result.usage.totalTokens} tokens · ${formatCost(result.costUsd)}`;
       if (acc.trim()) {
         setStreaming('');
@@ -229,8 +338,8 @@ export function App({ registry, model, permissionMode, rules }: AppProps) {
         </Text>
         <Text dimColor>
           {' '}
-          {model.provider}/{model.modelId} · mode={permissionMode} · Enter to send · /exit or Ctrl+C
-          to quit
+          {model.provider}/{model.modelId} · mode={permissionMode} · session{' '}
+          {session.id.slice(0, 8)} · /help · Ctrl+C to quit
         </Text>
       </Text>
 

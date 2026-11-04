@@ -18,10 +18,20 @@ export interface PermissionRequest {
 export type PermissionDecision = 'allow' | 'deny';
 export type AskPermission = (request: PermissionRequest) => Promise<PermissionDecision>;
 
+export type TaskStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface TaskItem {
+  id: number;
+  subject: string;
+  status: TaskStatus;
+}
+
 export interface ToolContext {
   cwd: string;
   askPermission: AskPermission;
   log: (message: string) => void;
+  /** Shared to-do list backing the task tool; survives across turns in a run. */
+  tasks?: TaskItem[];
 }
 
 export interface CakeTool<Args = unknown, Result = unknown> {

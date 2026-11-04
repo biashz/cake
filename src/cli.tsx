@@ -1,14 +1,22 @@
 import { parseArgs } from 'node:util';
+import type { ModelMessage } from 'ai';
 import { render } from 'ink';
 import { App } from './cli/App.js';
 import { loadConfig } from './config/config.js';
 import { runAgent } from './core/agent.js';
+import {
+  buildSystemPrompt,
+  createHistorySummarizer,
+  loadProjectInstructions,
+  maybeCompress,
+} from './core/context.js';
 import { formatCost } from './core/cost.js';
-import { SYSTEM_PROMPT } from './core/prompt.js';
+import { expandFileReferences } from './core/mentions.js';
 import type { PermissionRules } from './permissions/rules.js';
 import { loadSettings } from './permissions/settings.js';
 import { createDefaultRegistry, type ProviderRegistry } from './providers/registry.js';
 import type { ModelSpec } from './providers/types.js';
+import { defaultSessionFile, type SessionMeta, SessionStore } from './session/store.js';
 import { buildToolSet, createDefaultTools } from './tools/registry.js';
 import type { PermissionMode, ToolContext } from './tools/types.js';
 
@@ -24,6 +32,8 @@ async function main(): Promise<void> {
       model: { type: 'string', short: 'm' },
       yes: { type: 'boolean', short: 'y', default: false },
       'permission-mode': { type: 'string' },
+      resume: { type: 'string' },
+      continue: { type: 'boolean', short: 'c', default: false },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', short: 'v', default: false },
     },
@@ -38,10 +48,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  const cwd = process.cwd();
   const config = loadConfig();
   const registry = createDefaultRegistry(config);
 
-  const providerId = values.provider ?? config.provider;
+  const store = SessionStore.open(defaultSessionFile(cwd));
+  const resumed = resolveResume(store, values.resume, values.continue);
+
+  const providerId = values.provider ?? resumed?.provider ?? config.provider;
   if (!registry.has(providerId)) {
     fail(
       `Unknown provider "${providerId}". Available: ${registry
@@ -53,7 +67,7 @@ async function main(): Promise<void> {
   const provider = registry.get(providerId);
   const model: ModelSpec = {
     provider: providerId,
-    modelId: values.model ?? config.model ?? provider.defaultModelId,
+    modelId: values.model ?? resumed?.model ?? config.model ?? provider.defaultModelId,
   };
 
   if (!registry.getApiKey(providerId)) {
@@ -68,12 +82,34 @@ async function main(): Promise<void> {
 
   const mode = resolvePermissionMode(values['permission-mode'], values.yes);
   const settings = await loadSettings();
+  const system = buildSystemPrompt({
+    cwd,
+    projectInstructions: await loadProjectInstructions(cwd),
+  });
+  const session = resumed ?? store.create({ cwd, provider: providerId, model: model.modelId });
+  if (resumed && (resumed.provider !== providerId || resumed.model !== model.modelId)) {
+    store.updateModel(session.id, providerId, model.modelId);
+  }
+  const history = resumed ? store.messages(session.id) : [];
+  const maxContext = provider.capabilities(model.modelId).maxContext;
+
   const prompt = positionals.join(' ').trim();
   const headless = values.print || prompt.length > 0;
 
   if (headless) {
     if (!prompt) fail('No prompt provided. Usage: cake -p "your prompt"');
-    await runHeadless(registry, model, prompt, mode, settings.permissions);
+    await runHeadless({
+      registry,
+      model,
+      system,
+      store,
+      session,
+      history,
+      prompt,
+      mode,
+      rules: settings.permissions,
+      maxContext,
+    });
     return;
   }
 
@@ -82,11 +118,32 @@ async function main(): Promise<void> {
   }
 
   render(
-    <App registry={registry} model={model} permissionMode={mode} rules={settings.permissions} />,
-    {
-      exitOnCtrlC: false,
-    },
+    <App
+      registry={registry}
+      model={model}
+      permissionMode={mode}
+      rules={settings.permissions}
+      system={system}
+      store={store}
+      session={session}
+      initialMessages={history}
+      maxContext={maxContext}
+    />,
+    { exitOnCtrlC: false },
   );
+}
+
+function resolveResume(
+  store: SessionStore,
+  resumeId: string | undefined,
+  cont: boolean,
+): SessionMeta | undefined {
+  if (resumeId) {
+    const meta = store.get(resumeId);
+    if (!meta) fail(`No session "${resumeId}" in ${defaultSessionFile(process.cwd())}`);
+    return meta;
+  }
+  return cont ? store.latest(process.cwd()) : undefined;
 }
 
 function resolvePermissionMode(value: string | undefined, yes: boolean): PermissionMode {
@@ -97,19 +154,29 @@ function resolvePermissionMode(value: string | undefined, yes: boolean): Permiss
   return value as PermissionMode;
 }
 
-async function runHeadless(
-  registry: ProviderRegistry,
-  model: ModelSpec,
-  prompt: string,
-  mode: PermissionMode,
-  rules: PermissionRules,
-): Promise<void> {
+interface HeadlessOptions {
+  registry: ProviderRegistry;
+  model: ModelSpec;
+  system: string;
+  store: SessionStore;
+  session: SessionMeta;
+  history: ModelMessage[];
+  prompt: string;
+  mode: PermissionMode;
+  rules: PermissionRules;
+  maxContext: number;
+}
+
+async function runHeadless(options: HeadlessOptions): Promise<void> {
+  const { registry, model, system, store, session, history, prompt, mode, rules, maxContext } =
+    options;
+  const cwd = process.cwd();
   const controller = new AbortController();
   const onSigint = () => controller.abort();
   process.once('SIGINT', onSigint);
 
   const ctx: ToolContext = {
-    cwd: process.cwd(),
+    cwd,
     askPermission: async (request) => {
       const danger = request.danger ? ` [danger: ${request.danger}]` : '';
       process.stderr.write(
@@ -121,12 +188,36 @@ async function runHeadless(
   };
 
   try {
+    const expanded = await expandFileReferences(prompt, cwd);
+    if (expanded.files.length > 0) {
+      process.stderr.write(`[files] attached ${expanded.files.join(', ')}\n`);
+    }
+    if (expanded.missing.length > 0) {
+      process.stderr.write(
+        `[files] not found or outside workspace: ${expanded.missing.join(', ')}\n`,
+      );
+    }
+
+    let messages: ModelMessage[] = [...history, { role: 'user', content: expanded.text }];
+    try {
+      const compressed = await maybeCompress(messages, {
+        maxTokens: maxContext,
+        summarize: createHistorySummarizer(registry, model, controller.signal),
+      });
+      if (compressed.compressed) {
+        process.stderr.write('[context] older history compressed\n');
+      }
+      messages = compressed.messages;
+    } catch (err) {
+      process.stderr.write(`[context] compression skipped: ${(err as Error).message}\n`);
+    }
+
     const result = await runAgent(
       {
         model,
-        system: SYSTEM_PROMPT,
+        system,
         tools: buildToolSet(createDefaultTools(), ctx, mode, rules),
-        messages: [{ role: 'user', content: prompt }],
+        messages,
         abortSignal: controller.signal,
         onEvent: (event) => {
           switch (event.type) {
@@ -148,12 +239,20 @@ async function runHeadless(
     process.stderr.write(
       `[tokens] in=${result.usage.inputTokens} out=${result.usage.outputTokens} cost=${formatCost(result.costUsd)}\n`,
     );
+    store.setTitleIfEmpty(session.id, prompt);
+    store.saveMessages(session.id, result.messages);
+    store.addUsage(session.id, {
+      totalTokens: result.usage.totalTokens,
+      costUsd: result.costUsd,
+    });
+    process.stderr.write(`[session] ${session.id}\n`);
   } catch (err) {
     process.stdout.write('\n');
     process.stderr.write(`[error] ${(err as Error).message}\n`);
     process.exitCode = 1;
   } finally {
     process.off('SIGINT', onSigint);
+    store.close();
   }
 }
 
@@ -183,8 +282,18 @@ function printHelp(): void {
       '      --permission-mode <m> plan | default | acceptEdits | yolo',
       '      --provider <id>       Provider: anthropic | openai',
       '  -m, --model <id>          Model id (overrides config/default)',
+      '  -c, --continue            Resume the most recent session in this workspace',
+      '      --resume <id>         Resume a session by id',
       '  -h, --help                Show this help',
       '  -v, --version             Print version',
+      '',
+      'Input:',
+      '  @path/to/file             Attach a file to the prompt',
+      '  /help  /clear  /model <id>  /cost  /exit    Interactive commands',
+      '',
+      'Project context:',
+      '  AGENTS.md files from the workspace root upward are loaded into the system prompt.',
+      '  Sessions persist in .cake/sessions/cake.db (node:sqlite).',
       '',
       'Permission modes:',
       '  plan          Read-only: file reads and searches, nothing else',

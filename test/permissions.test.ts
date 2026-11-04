@@ -100,7 +100,7 @@ describe('authorize', () => {
 describe('buildToolSet', () => {
   it('exposes only read tools in plan mode', () => {
     const set = buildToolSet(createDefaultTools(), ctxWith('allow'), 'plan');
-    expect(Object.keys(set).sort()).toEqual(['git', 'glob', 'grep', 'read']);
+    expect(Object.keys(set).sort()).toEqual(['git', 'glob', 'grep', 'read', 'task']);
   });
 
   it('exposes all tools in yolo mode', () => {
@@ -112,6 +112,7 @@ describe('buildToolSet', () => {
       'glob',
       'grep',
       'read',
+      'task',
       'write',
     ]);
   });

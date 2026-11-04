@@ -7,11 +7,21 @@ import { globTool } from './glob.js';
 import { grepTool } from './grep.js';
 import { authorize, isToolAvailable } from './permissions.js';
 import { readTool } from './read.js';
+import { taskTool } from './task.js';
 import type { CakeTool, PermissionMode, ToolContext } from './types.js';
 import { writeTool } from './write.js';
 
 export function createDefaultTools(): CakeTool[] {
-  return [readTool, writeTool, editTool, globTool, grepTool, gitTool, bashTool] as CakeTool[];
+  return [
+    readTool,
+    writeTool,
+    editTool,
+    globTool,
+    grepTool,
+    gitTool,
+    bashTool,
+    taskTool,
+  ] as CakeTool[];
 }
 
 /**

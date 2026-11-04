@@ -7,7 +7,7 @@ import type { AgentEvent, TokenUsage } from './events.js';
 export interface AgentRun {
   model: ModelSpec;
   messages: ModelMessage[];
-  /** Optional system prompt, prepended as a system message. */
+  /** Optional system prompt, passed to the model as instructions. */
   system?: string;
   /** Tools available this run; omitted means a plain chat turn. */
   tools?: ToolSet;
@@ -38,16 +38,13 @@ export async function runAgent(run: AgentRun, registry: ProviderRegistry): Promi
   const emit = run.onEvent ?? (() => {});
   const model = registry.resolveModel(run.model);
 
-  const messages: ModelMessage[] = run.system
-    ? [{ role: 'system', content: run.system }, ...run.messages]
-    : run.messages;
-
   emit({ type: 'start', model: run.model });
 
   const hasTools = run.tools !== undefined && Object.keys(run.tools).length > 0;
   const result = streamText({
     model,
-    messages,
+    instructions: run.system,
+    messages: run.messages,
     ...(hasTools ? { tools: run.tools, stopWhen: stepCountIs(run.maxSteps ?? 20) } : {}),
     abortSignal: run.abortSignal,
   });
