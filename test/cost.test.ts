@@ -1,0 +1,64 @@
+import { describe, expect, it } from 'vitest';
+import { estimateCost, formatCost, normalizeUsage } from '../src/core/cost.js';
+
+describe('normalizeUsage', () => {
+  it('coerces undefined to zero', () => {
+    expect(normalizeUsage(undefined)).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+  });
+
+  it('sums input and output into total', () => {
+    expect(normalizeUsage({ inputTokens: 10, outputTokens: 5 })).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+    });
+  });
+
+  it('treats undefined fields as zero', () => {
+    expect(normalizeUsage({ inputTokens: undefined, outputTokens: undefined })).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    });
+  });
+});
+
+describe('estimateCost', () => {
+  it('prices anthropic sonnet input at $3 / 1M tokens', () => {
+    const cost = estimateCost(
+      { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+      { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+    );
+    expect(cost).toBeCloseTo(3, 6);
+  });
+
+  it('prices anthropic sonnet output at $15 / 1M tokens', () => {
+    const cost = estimateCost(
+      { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+      { inputTokens: 0, outputTokens: 1_000_000, totalTokens: 1_000_000 },
+    );
+    expect(cost).toBeCloseTo(15, 6);
+  });
+
+  it('returns 0 for unknown models', () => {
+    const cost = estimateCost(
+      { provider: 'mystery', modelId: 'unknown' },
+      { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+    );
+    expect(cost).toBe(0);
+  });
+});
+
+describe('formatCost', () => {
+  it('formats zero', () => {
+    expect(formatCost(0)).toBe('$0.0000');
+  });
+
+  it('uses 4 decimals for sub-cent costs', () => {
+    expect(formatCost(0.0012)).toBe('$0.0012');
+  });
+
+  it('uses 3 decimals for larger costs', () => {
+    expect(formatCost(1.2)).toBe('$1.200');
+  });
+});
