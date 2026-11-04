@@ -11,6 +11,8 @@ export interface PermissionRequest {
   permission: PermissionClass;
   /** Short target rendered in the approval prompt: a path or a command. */
   target: string;
+  /** Set when the call matched a dangerous-operation pattern. */
+  danger?: string;
 }
 
 export type PermissionDecision = 'allow' | 'deny';
@@ -26,9 +28,13 @@ export interface CakeTool<Args = unknown, Result = unknown> {
   name: string;
   description: string;
   permission: PermissionClass;
+  /** Per-call override, e.g. git read subcommands vs mutating ones. */
+  permissionFor?(args: Args): PermissionClass;
   inputSchema: z.ZodType<Args, Args>;
   /** One-line description of a concrete call, shown when asking for approval. */
   summarize(args: Args): string;
+  /** Value matched by allow/deny rules and danger patterns: a path or command. */
+  matchTarget(args: Args): string;
   execute(args: Args, ctx: ToolContext): Promise<Result>;
 }
 

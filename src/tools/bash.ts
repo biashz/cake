@@ -26,6 +26,7 @@ export const bashTool: CakeTool<Args, string> = {
   permission: 'shell',
   inputSchema: schema,
   summarize: (args) => (args.description ? `${args.description} (${args.command})` : args.command),
+  matchTarget: (args) => args.command,
   async execute(args, ctx) {
     const timeout = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
     const result = await execa(args.command, {

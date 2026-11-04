@@ -23,6 +23,7 @@ export const globTool: CakeTool<Args, string> = {
   permission: 'read',
   inputSchema: schema,
   summarize: (args) => (args.path ? `${args.pattern} in ${args.path}` : args.pattern),
+  matchTarget: (args) => args.path ?? '.',
   async execute(args, ctx) {
     const base = args.path ?? '.';
     const entries = await fg(args.pattern, {

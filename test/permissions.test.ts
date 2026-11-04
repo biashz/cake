@@ -14,6 +14,7 @@ import {
 const readTool = createDefaultTools().find((tool) => tool.name === 'read') as CakeTool;
 const writeTool = createDefaultTools().find((tool) => tool.name === 'write') as CakeTool;
 const bashTool = createDefaultTools().find((tool) => tool.name === 'bash') as CakeTool;
+const gitTool = createDefaultTools().find((tool) => tool.name === 'git') as CakeTool;
 
 function ctxWith(decision: 'allow' | 'deny', seen: PermissionRequest[] = []): ToolContext {
   return {
@@ -82,6 +83,13 @@ describe('authorize', () => {
     expect(seen).toHaveLength(0);
   });
 
+  it('keeps git readable but denies mutations in plan mode', async () => {
+    await authorize(gitTool, { subcommand: 'status' }, ctxWith('allow'), 'plan');
+    await expect(
+      authorize(gitTool, { subcommand: 'commit', message: 'x' }, ctxWith('allow'), 'plan'),
+    ).rejects.toBeInstanceOf(ToolDeniedError);
+  });
+
   it('auto-approves writes in acceptEdits mode', async () => {
     const seen: PermissionRequest[] = [];
     await authorize(writeTool, { path: 'a.ts', content: '' }, ctxWith('deny', seen), 'acceptEdits');
@@ -92,11 +100,63 @@ describe('authorize', () => {
 describe('buildToolSet', () => {
   it('exposes only read tools in plan mode', () => {
     const set = buildToolSet(createDefaultTools(), ctxWith('allow'), 'plan');
-    expect(Object.keys(set).sort()).toEqual(['glob', 'grep', 'read']);
+    expect(Object.keys(set).sort()).toEqual(['git', 'glob', 'grep', 'read']);
   });
 
   it('exposes all tools in yolo mode', () => {
     const set = buildToolSet(createDefaultTools(), ctxWith('allow'), 'yolo');
-    expect(Object.keys(set).sort()).toEqual(['bash', 'edit', 'glob', 'grep', 'read', 'write']);
+    expect(Object.keys(set).sort()).toEqual([
+      'bash',
+      'edit',
+      'git',
+      'glob',
+      'grep',
+      'read',
+      'write',
+    ]);
+  });
+});
+
+describe('authorize with rules and danger', () => {
+  it('lets an allow rule skip approval in default mode', async () => {
+    const seen: PermissionRequest[] = [];
+    await authorize(
+      writeTool,
+      { path: 'src/a.ts', content: '' },
+      ctxWith('deny', seen),
+      'default',
+      {
+        allow: ['write(src/**)'],
+        deny: [],
+      },
+    );
+    expect(seen).toHaveLength(0);
+  });
+
+  it('blocks a read that matches a deny rule', async () => {
+    await expect(
+      authorize(readTool, { path: 'secret.txt' }, ctxWith('allow'), 'default', {
+        allow: [],
+        deny: ['read(secret*)'],
+      }),
+    ).rejects.toThrow(/Denied by rule/);
+  });
+
+  it('still asks for dangerous commands in yolo mode', async () => {
+    const seen: PermissionRequest[] = [];
+    await authorize(bashTool, { command: 'rm -rf /' }, ctxWith('allow', seen), 'yolo');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.danger).toBe('recursive force delete (rm -rf)');
+  });
+
+  it('does not auto-allow dangerous commands via an allow rule', async () => {
+    const seen: PermissionRequest[] = [];
+    await expect(
+      authorize(bashTool, { command: 'git push --force' }, ctxWith('deny', seen), 'yolo', {
+        allow: ['bash(*)'],
+        deny: [],
+      }),
+    ).rejects.toThrow(/force push/);
+    expect(seen).toHaveLength(1);
   });
 });

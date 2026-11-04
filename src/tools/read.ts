@@ -28,6 +28,7 @@ export const readTool: CakeTool<Args, string> = {
   permission: 'read',
   inputSchema: schema,
   summarize: (args) => (args.offset ? `${args.path} (from line ${args.offset})` : args.path),
+  matchTarget: (args) => args.path,
   async execute(args, ctx) {
     const abs = resolveInside(ctx.cwd, args.path);
     const rel = toPosix(path.relative(ctx.cwd, abs));

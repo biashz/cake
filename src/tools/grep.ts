@@ -31,6 +31,7 @@ export const grepTool: CakeTool<Args, string> = {
     const scope = args.glob ?? args.path ?? '.';
     return `/${args.pattern}/ in ${scope}`;
   },
+  matchTarget: (args) => args.path ?? '.',
   async execute(args, ctx) {
     let regex: RegExp;
     try {

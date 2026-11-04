@@ -18,6 +18,7 @@ export const writeTool: CakeTool<Args, string> = {
   permission: 'write',
   inputSchema: schema,
   summarize: (args) => `${args.path} (${args.content.length} chars)`,
+  matchTarget: (args) => args.path,
   async execute(args, ctx) {
     const abs = resolveInside(ctx.cwd, args.path);
     await mkdir(path.dirname(abs), { recursive: true });

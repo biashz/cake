@@ -5,6 +5,8 @@ import { loadConfig } from './config/config.js';
 import { runAgent } from './core/agent.js';
 import { formatCost } from './core/cost.js';
 import { SYSTEM_PROMPT } from './core/prompt.js';
+import type { PermissionRules } from './permissions/rules.js';
+import { loadSettings } from './permissions/settings.js';
 import { createDefaultRegistry, type ProviderRegistry } from './providers/registry.js';
 import type { ModelSpec } from './providers/types.js';
 import { buildToolSet, createDefaultTools } from './tools/registry.js';
@@ -65,12 +67,13 @@ async function main(): Promise<void> {
   }
 
   const mode = resolvePermissionMode(values['permission-mode'], values.yes);
+  const settings = await loadSettings();
   const prompt = positionals.join(' ').trim();
   const headless = values.print || prompt.length > 0;
 
   if (headless) {
     if (!prompt) fail('No prompt provided. Usage: cake -p "your prompt"');
-    await runHeadless(registry, model, prompt, mode);
+    await runHeadless(registry, model, prompt, mode, settings.permissions);
     return;
   }
 
@@ -78,7 +81,12 @@ async function main(): Promise<void> {
     fail('Interactive mode requires a TTY. Pass a prompt, e.g.: cake "hello"');
   }
 
-  render(<App registry={registry} model={model} permissionMode={mode} />, { exitOnCtrlC: false });
+  render(
+    <App registry={registry} model={model} permissionMode={mode} rules={settings.permissions} />,
+    {
+      exitOnCtrlC: false,
+    },
+  );
 }
 
 function resolvePermissionMode(value: string | undefined, yes: boolean): PermissionMode {
@@ -94,6 +102,7 @@ async function runHeadless(
   model: ModelSpec,
   prompt: string,
   mode: PermissionMode,
+  rules: PermissionRules,
 ): Promise<void> {
   const controller = new AbortController();
   const onSigint = () => controller.abort();
@@ -102,8 +111,9 @@ async function runHeadless(
   const ctx: ToolContext = {
     cwd: process.cwd(),
     askPermission: async (request) => {
+      const danger = request.danger ? ` [danger: ${request.danger}]` : '';
       process.stderr.write(
-        `[permission] ${request.tool} needs approval: ${request.target} (non-interactive; pass --yes to allow)\n`,
+        `[permission] ${request.tool} needs approval: ${request.target}${danger} (non-interactive; pass --yes to allow)\n`,
       );
       return 'deny';
     },
@@ -115,7 +125,7 @@ async function runHeadless(
       {
         model,
         system: SYSTEM_PROMPT,
-        tools: buildToolSet(createDefaultTools(), ctx, mode),
+        tools: buildToolSet(createDefaultTools(), ctx, mode, rules),
         messages: [{ role: 'user', content: prompt }],
         abortSignal: controller.signal,
         onEvent: (event) => {
@@ -185,6 +195,10 @@ function printHelp(): void {
       'Environment:',
       '  ANTHROPIC_API_KEY | OPENAI_API_KEY   API keys',
       '  CAKE_PROVIDER, CAKE_MODEL            Defaults',
+      '',
+      'Rules:',
+      '  .cake/settings.json  { "permissions": { "allow": ["bash(npm test*)"], "deny": [...] } }',
+      '  Rule syntax: tool or tool(pattern); * and ? are wildcards; deny wins over allow.',
       '',
     ].join('\n'),
   );

@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { runAgent } from '../core/agent.js';
 import { formatCost } from '../core/cost.js';
 import { SYSTEM_PROMPT } from '../core/prompt.js';
+import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
 import { buildToolSet, createDefaultTools } from '../tools/registry.js';
@@ -34,6 +35,7 @@ export interface AppProps {
   registry: ProviderRegistry;
   model: ModelSpec;
   permissionMode: PermissionMode;
+  rules: PermissionRules;
 }
 
 function preview(value: unknown, max = 160): string {
@@ -42,7 +44,7 @@ function preview(value: unknown, max = 160): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
-export function App({ registry, model, permissionMode }: AppProps) {
+export function App({ registry, model, permissionMode, rules }: AppProps) {
   const { exit } = useApp();
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [input, setInput] = useState('');
@@ -93,7 +95,7 @@ export function App({ registry, model, permissionMode }: AppProps) {
     const controller = new AbortController();
     abortRef.current = controller;
     const ctx: ToolContext = { cwd: process.cwd(), askPermission, log: () => {} };
-    const tools = buildToolSet(createDefaultTools(), ctx, permissionMode);
+    const tools = buildToolSet(createDefaultTools(), ctx, permissionMode, rules);
 
     let acc = '';
     let sawToolCall = false;
@@ -296,6 +298,11 @@ export function App({ registry, model, permissionMode }: AppProps) {
             </Text>{' '}
             {approval.request.tool} ({approval.request.permission}) → {approval.request.target}
           </Text>
+          {approval.request.danger ? (
+            <Text bold color="red">
+              danger: {approval.request.danger}
+            </Text>
+          ) : null}
           <Text dimColor>[y/Enter] allow · [n/Esc] deny</Text>
         </Box>
       ) : null}
