@@ -16,6 +16,7 @@ import { createRagTools } from '../rag/tools.js';
 import type { SessionMeta, SessionStore } from '../session/store.js';
 import { buildToolSet, createDefaultTools } from '../tools/registry.js';
 import type {
+  CakeTool,
   PermissionDecision,
   PermissionMode,
   PermissionRequest,
@@ -49,6 +50,7 @@ export interface AppProps {
   initialMessages: ModelMessage[];
   maxContext: number;
   embedder?: Embedder;
+  mcpTools?: CakeTool[];
 }
 
 const COMMANDS = [
@@ -67,6 +69,7 @@ function preview(value: unknown, max = 160): string {
 
 export function App(props: AppProps) {
   const { registry, permissionMode, rules, system, store, maxContext, embedder } = props;
+  const mcpTools = props.mcpTools ?? [];
   const { exit } = useApp();
   const [model, setModel] = useState<ModelSpec>(props.model);
   const [session, setSession] = useState<SessionMeta>(props.session);
@@ -284,9 +287,10 @@ export function App(props: AppProps) {
         nestedCostUsd += costUsd;
       },
     };
-    const defaultTools = embedder
-      ? [...createDefaultTools(), ...createRagTools(embedder)]
-      : createDefaultTools();
+    const defaultTools = [
+      ...(embedder ? [...createDefaultTools(), ...createRagTools(embedder)] : createDefaultTools()),
+      ...mcpTools,
+    ];
     const tools = [
       ...defaultTools,
       createAgentTool({

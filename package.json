@@ -27,6 +27,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.96",
     "@ai-sdk/openai": "^4.0.108",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@vscode/tree-sitter-wasm": "^0.3.1",
     "ai": "^7.0.162",
     "execa": "^10.2.1",

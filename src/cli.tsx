@@ -13,6 +13,7 @@ import {
 import { addUsage, formatCost } from './core/cost.js';
 import type { AgentEvent, TokenUsage } from './core/events.js';
 import { expandFileReferences } from './core/mentions.js';
+import { openMcpServers } from './mcp/client.js';
 import { createAgentTool } from './orchestration/tool.js';
 import type { PermissionRules } from './permissions/rules.js';
 import { loadSettings } from './permissions/settings.js';
@@ -23,7 +24,7 @@ import { createEmbedder, DEFAULT_EMBEDDING_MODEL, type Embedder } from './rag/em
 import { createRagTools } from './rag/tools.js';
 import { defaultSessionFile, type SessionMeta, SessionStore } from './session/store.js';
 import { buildToolSet, createDefaultTools } from './tools/registry.js';
-import type { PermissionMode, ToolContext } from './tools/types.js';
+import type { CakeTool, PermissionMode, ToolContext } from './tools/types.js';
 
 const VERSION = '0.0.0';
 const PERMISSION_MODES: PermissionMode[] = ['plan', 'default', 'acceptEdits', 'yolo'];
@@ -98,33 +99,46 @@ async function main(): Promise<void> {
   const history = resumed ? store.messages(session.id) : [];
   const maxContext = provider.capabilities(model.modelId).maxContext;
   const embedder = resolveEmbedder(registry);
+  const mcp = await openMcpServers({
+    cwd,
+    onWarning: (message) => process.stderr.write(`[mcp] ${message}\n`),
+  });
+  if (mcp.servers.length > 0) {
+    process.stderr.write(`[mcp] connected ${mcp.servers.join(', ')} (${mcp.tools.length} tools)\n`);
+  }
 
   const prompt = positionals.join(' ').trim();
   const headless = values.print || prompt.length > 0;
 
   if (headless) {
     if (!prompt) fail('No prompt provided. Usage: cake -p "your prompt"');
-    await runHeadless({
-      registry,
-      model,
-      system,
-      store,
-      session,
-      history,
-      prompt,
-      mode,
-      rules: settings.permissions,
-      maxContext,
-      embedder,
-    });
+    try {
+      await runHeadless({
+        registry,
+        model,
+        system,
+        store,
+        session,
+        history,
+        prompt,
+        mode,
+        rules: settings.permissions,
+        maxContext,
+        embedder,
+        mcpTools: mcp.tools,
+      });
+    } finally {
+      await mcp.close();
+    }
     return;
   }
 
   if (!process.stdin.isTTY) {
+    await mcp.close();
     fail('Interactive mode requires a TTY. Pass a prompt, e.g.: cake "hello"');
   }
 
-  render(
+  const app = render(
     <App
       registry={registry}
       model={model}
@@ -136,9 +150,15 @@ async function main(): Promise<void> {
       initialMessages={history}
       maxContext={maxContext}
       embedder={embedder}
+      mcpTools={mcp.tools}
     />,
     { exitOnCtrlC: false },
   );
+  try {
+    await app.waitUntilExit();
+  } finally {
+    await mcp.close();
+  }
 }
 
 function resolveResume(
@@ -185,6 +205,7 @@ interface HeadlessOptions {
   rules: PermissionRules;
   maxContext: number;
   embedder?: Embedder;
+  mcpTools?: CakeTool[];
 }
 
 async function runHeadless(options: HeadlessOptions): Promise<void> {
@@ -200,6 +221,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
     rules,
     maxContext,
     embedder,
+    mcpTools = [],
   } = options;
   const cwd = process.cwd();
   const controller = new AbortController();
@@ -286,7 +308,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
       process.stderr.write(`[context] compression skipped: ${(err as Error).message}\n`);
     }
 
-    const baseTools = withRagTools(embedder);
+    const baseTools = [...withRagTools(embedder), ...mcpTools];
     const tools = [
       ...baseTools,
       createAgentTool({
@@ -374,6 +396,10 @@ function printHelp(): void {
       'Project context:',
       '  AGENTS.md files from the workspace root upward are loaded into the system prompt.',
       '  Sessions persist in .cake/sessions/cake.db (node:sqlite).',
+      '',
+      'MCP:',
+      '  ~/.cake/mcp.json and .cake/mcp.json define "mcpServers" (stdio or http).',
+      '  Tools appear as mcp__<server>__<tool>; read-only server hints map to read access.',
       '',
       'Permission modes:',
       '  plan          Read-only: file reads and searches, nothing else',
