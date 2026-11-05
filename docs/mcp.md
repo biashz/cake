@@ -21,7 +21,18 @@ cake 作为 MCP **客户端**连接外部 server，把它们的工具发现、�
 }
 ```
 
-server 名会进入工具名，只允许字母、数字、下划线（其他字符替换为 `_`）。
+server 名会进入工具名，只允许字母、数字、下划线（其他字符替换为 `_`）。桌面端 Inspector
+写入的名字更严格：以字母或数字开头，可含 `.`、`_`、`-`，最长 64。
+
+`enabled: false` 让 server 留在配置里但不连接，随时可以切回：
+
+```json
+{
+  "mcpServers": {
+    "github": { "url": "https://api.githubcopilot.com/mcp/", "enabled": false }
+  }
+}
+```
 
 ### stdio server
 
@@ -48,6 +59,7 @@ server 名会进入工具名，只允许字母、数字、下划线（其他字�
 | `cwd`        | 否   | 相对路径以**配置文件所在目录**为基准（全局配置即 home，项目配置即工作区） |
 | `permission` | 否   | `read` / `write` / `shell`，强制覆盖工具注解推断                          |
 | `maxTools`   | 否   | 直接暴露的工具数上限，默认 24                                             |
+| `enabled`    | 否   | `false` 时保留条目但不连接，默认 `true`                                   |
 
 stdio server 的 stderr 会透传到当前终端，方便排查启动失败。
 
@@ -66,11 +78,23 @@ stdio server 的 stderr 会透传到当前终端，方便排查启动失败。
 }
 ```
 
-| 字段                      | 必填 | 说明                     |
-| ------------------------- | ---- | ------------------------ |
-| `url`                     | 是   | Streamable HTTP endpoint |
-| `headers`                 | 否   | 附加请求头               |
-| `permission` / `maxTools` | 否   | 同 stdio                 |
+| 字段                                  | 必填 | 说明                     |
+| ------------------------------------- | ---- | ------------------------ |
+| `url`                                 | 是   | Streamable HTTP endpoint |
+| `headers`                             | 否   | 附加请求头               |
+| `permission` / `maxTools` / `enabled` | 否   | 同 stdio                 |
+
+## 桌面端管理
+
+Inspector 的「MCP servers」面板可以增删改上面这些配置，不必手改文件：
+
+- 每次写入只重写面板负责的那几个键（`command`、`args`、`url`、`permission`、`enabled`），
+  手工加上的 `env`、`cwd`、`headers`、`maxTools` 原样保留；面板不编辑它们，仍然改文件即可
+- 「编辑」从磁盘上真正生效的那条开始，而不是从表单的默认值开始
+- `args` 按空格切分；要传含空格的参数，直接改文件
+- 项目里的同名条目覆盖全局条目，面板上改名等于「删掉再加」
+- 每个 server 一行状态：在线（带工具数）／已关闭／失败（带原因），侧栏底部汇总失败的名字；
+  面板还会列出上一次连接带来了什么变化，所以坏掉的 server 在模型发现少工具之前就能看见
 
 ## 环境变量展开
 
