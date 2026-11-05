@@ -17,5 +17,14 @@ export type AgentEvent =
   | { type: 'tool-call'; toolName: string; input: unknown }
   | { type: 'tool-result'; toolName: string; input: unknown; output: unknown }
   | { type: 'tool-error'; toolName: string; error: Error }
+  | { type: 'subagent-start'; agentType: string; prompt: string }
+  | {
+      type: 'subagent-end';
+      agentType: string;
+      prompt: string;
+      text: string;
+      usage: TokenUsage;
+      costUsd: number;
+    }
   | { type: 'finish'; text: string; usage: TokenUsage; costUsd: number }
   | { type: 'error'; error: Error };

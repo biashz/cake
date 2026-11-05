@@ -45,8 +45,19 @@ export function normalizeUsage(
   return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
 }
 
-/** Estimated USD cost for a run. Returns 0 when the model has no known pricing. */
-export function estimateCost(spec: ModelSpec, usage: TokenUsage): number {
+/** Sum usage from the parent model call and any nested subagent runs. */
+export function addUsage(base: TokenUsage, extra: TokenUsage): TokenUsage {
+  return {
+    inputTokens: base.inputTokens + extra.inputTokens,
+    outputTokens: base.outputTokens + extra.outputTokens,
+    totalTokens: base.totalTokens + extra.totalTokens,
+  };
+}
+
+/** Estimated USD cost for a run. Returns 0 when the model has no known pricing. */ export function estimateCost(
+  spec: ModelSpec,
+  usage: TokenUsage,
+): number {
   const rule = PRICING_RULES.find((r) => r.match(spec));
   if (!rule) return 0;
   const input = (usage.inputTokens / 1_000_000) * rule.pricing.inputPer1M;

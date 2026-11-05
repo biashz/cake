@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { TokenUsage } from '../core/events.js';
 
 /** Permission class a tool falls into; drives approval policy. */
 export type PermissionClass = 'read' | 'write' | 'shell';
@@ -32,6 +33,8 @@ export interface ToolContext {
   log: (message: string) => void;
   /** Shared to-do list backing the task tool; survives across turns in a run. */
   tasks?: TaskItem[];
+  /** Report usage from nested work (subagents) so callers can bill the whole run. */
+  onUsage?: (usage: TokenUsage, costUsd: number) => void;
 }
 
 export interface CakeTool<Args = unknown, Result = unknown> {

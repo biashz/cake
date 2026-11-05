@@ -10,8 +10,10 @@ import {
   loadProjectInstructions,
   maybeCompress,
 } from './core/context.js';
-import { formatCost } from './core/cost.js';
+import { addUsage, formatCost } from './core/cost.js';
+import type { AgentEvent, TokenUsage } from './core/events.js';
 import { expandFileReferences } from './core/mentions.js';
+import { createAgentTool } from './orchestration/tool.js';
 import type { PermissionRules } from './permissions/rules.js';
 import { loadSettings } from './permissions/settings.js';
 import { createDefaultRegistry, type ProviderRegistry } from './providers/registry.js';
@@ -204,6 +206,9 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
   const onSigint = () => controller.abort();
   process.once('SIGINT', onSigint);
 
+  const nestedUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  let nestedCostUsd = 0;
+
   const ctx: ToolContext = {
     cwd,
     askPermission: async (request) => {
@@ -214,6 +219,35 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
       return 'deny';
     },
     log: () => {},
+    onUsage: (usage, costUsd) => {
+      const total = addUsage(nestedUsage, usage);
+      nestedUsage.inputTokens = total.inputTokens;
+      nestedUsage.outputTokens = total.outputTokens;
+      nestedUsage.totalTokens = total.totalTokens;
+      nestedCostUsd += costUsd;
+    },
+  };
+
+  const handleEvent = (event: AgentEvent) => {
+    switch (event.type) {
+      case 'text-delta':
+        process.stdout.write(event.delta);
+        break;
+      case 'tool-call':
+        process.stderr.write(`[tool] ${event.toolName} ${brief(event.input)}\n`);
+        break;
+      case 'tool-error':
+        process.stderr.write(`[tool-error] ${event.toolName}: ${event.error.message}\n`);
+        break;
+      case 'subagent-start':
+        process.stderr.write(`[subagent] ${event.agentType} started: ${brief(event.prompt)}\n`);
+        break;
+      case 'subagent-end':
+        process.stderr.write(
+          `[subagent] ${event.agentType} done (${event.usage.totalTokens} tokens, ${formatCost(event.costUsd)})\n`,
+        );
+        break;
+    }
   };
 
   try {
@@ -252,38 +286,43 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
       process.stderr.write(`[context] compression skipped: ${(err as Error).message}\n`);
     }
 
+    const baseTools = withRagTools(embedder);
+    const tools = [
+      ...baseTools,
+      createAgentTool({
+        registry,
+        model,
+        systemBase: system,
+        tools: baseTools,
+        mode,
+        rules,
+        abortSignal: controller.signal,
+        onEvent: handleEvent,
+      }),
+    ];
+
     const result = await runAgent(
       {
         model,
         system,
-        tools: buildToolSet(withRagTools(embedder), ctx, mode, rules),
+        tools: buildToolSet(tools, ctx, mode, rules),
         messages,
         abortSignal: controller.signal,
-        onEvent: (event) => {
-          switch (event.type) {
-            case 'text-delta':
-              process.stdout.write(event.delta);
-              break;
-            case 'tool-call':
-              process.stderr.write(`[tool] ${event.toolName} ${brief(event.input)}\n`);
-              break;
-            case 'tool-error':
-              process.stderr.write(`[tool-error] ${event.toolName}: ${event.error.message}\n`);
-              break;
-          }
-        },
+        onEvent: handleEvent,
       },
       registry,
     );
     process.stdout.write('\n');
+    const totalUsage = addUsage(result.usage, nestedUsage);
+    const totalCost = result.costUsd + nestedCostUsd;
     process.stderr.write(
-      `[tokens] in=${result.usage.inputTokens} out=${result.usage.outputTokens} cost=${formatCost(result.costUsd)}\n`,
+      `[tokens] in=${totalUsage.inputTokens} out=${totalUsage.outputTokens} cost=${formatCost(totalCost)}\n`,
     );
     store.setTitleIfEmpty(session.id, prompt);
     store.saveMessages(session.id, result.messages);
     store.addUsage(session.id, {
-      totalTokens: result.usage.totalTokens,
-      costUsd: result.costUsd,
+      totalTokens: totalUsage.totalTokens,
+      costUsd: totalCost,
     });
     process.stderr.write(`[session] ${session.id}\n`);
   } catch (err) {

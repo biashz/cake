@@ -3,8 +3,10 @@ import { Box, Text, useApp, useInput } from 'ink';
 import { useEffect, useRef, useState } from 'react';
 import { runAgent } from '../core/agent.js';
 import { createHistorySummarizer, maybeCompress } from '../core/context.js';
-import { formatCost } from '../core/cost.js';
+import { addUsage, formatCost } from '../core/cost.js';
+import type { AgentEvent, TokenUsage } from '../core/events.js';
 import { expandFileReferences } from '../core/mentions.js';
+import { createAgentTool } from '../orchestration/tool.js';
 import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
@@ -211,12 +213,6 @@ export function App(props: AppProps) {
       return;
     }
 
-    const ctx: ToolContext = { cwd: process.cwd(), askPermission, log: () => {} };
-    const defaultTools = embedder
-      ? [...createDefaultTools(), ...createRagTools(embedder)]
-      : createDefaultTools();
-    const tools = buildToolSet(defaultTools, ctx, permissionMode, rules);
-
     let acc = '';
     let sawToolCall = false;
     const flushText = () => {
@@ -226,62 +222,111 @@ export function App(props: AppProps) {
       setStreaming('');
     };
 
+    function handleEvent(event: AgentEvent): void {
+      switch (event.type) {
+        case 'text-delta':
+          acc += event.delta;
+          setStreaming(acc);
+          break;
+        case 'tool-call':
+          sawToolCall = true;
+          flushText();
+          addEntry({
+            role: 'tool',
+            prefix: '→',
+            label: event.toolName,
+            text: preview(event.input),
+          });
+          break;
+        case 'tool-result':
+          addEntry({
+            role: 'tool',
+            prefix: '←',
+            label: event.toolName,
+            text: preview(event.output),
+          });
+          break;
+        case 'tool-error':
+          addEntry({
+            role: 'error',
+            prefix: '✗',
+            label: event.toolName,
+            text: event.error.message,
+          });
+          break;
+        case 'subagent-start':
+          flushText();
+          addEntry({
+            role: 'info',
+            text: `↳ ${event.agentType} agent: ${preview(event.prompt)}`,
+          });
+          break;
+        case 'subagent-end':
+          addEntry({
+            role: 'info',
+            text: `↳ ${event.agentType} done · ${event.usage.totalTokens} tokens · ${formatCost(event.costUsd)}`,
+          });
+          break;
+      }
+    }
+
+    const nestedUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    let nestedCostUsd = 0;
+    const ctx: ToolContext = {
+      cwd: process.cwd(),
+      askPermission,
+      log: () => {},
+      onUsage: (usage, costUsd) => {
+        const total = addUsage(nestedUsage, usage);
+        nestedUsage.inputTokens = total.inputTokens;
+        nestedUsage.outputTokens = total.outputTokens;
+        nestedUsage.totalTokens = total.totalTokens;
+        nestedCostUsd += costUsd;
+      },
+    };
+    const defaultTools = embedder
+      ? [...createDefaultTools(), ...createRagTools(embedder)]
+      : createDefaultTools();
+    const tools = [
+      ...defaultTools,
+      createAgentTool({
+        registry,
+        model,
+        systemBase: system,
+        tools: defaultTools,
+        mode: permissionMode,
+        rules,
+        abortSignal: controller.signal,
+        onEvent: handleEvent,
+      }),
+    ];
+    const toolSet = buildToolSet(tools, ctx, permissionMode, rules);
+
     try {
       const result = await runAgent(
         {
           model,
           system,
-          tools,
+          tools: toolSet,
           messages: pending,
           abortSignal: controller.signal,
-          onEvent: (event) => {
-            switch (event.type) {
-              case 'text-delta':
-                acc += event.delta;
-                setStreaming(acc);
-                break;
-              case 'tool-call':
-                sawToolCall = true;
-                flushText();
-                addEntry({
-                  role: 'tool',
-                  prefix: '→',
-                  label: event.toolName,
-                  text: preview(event.input),
-                });
-                break;
-              case 'tool-result':
-                addEntry({
-                  role: 'tool',
-                  prefix: '←',
-                  label: event.toolName,
-                  text: preview(event.output),
-                });
-                break;
-              case 'tool-error':
-                addEntry({
-                  role: 'error',
-                  prefix: '✗',
-                  label: event.toolName,
-                  text: event.error.message,
-                });
-                break;
-            }
-          },
+          onEvent: handleEvent,
         },
         registry,
       );
 
+      const totalUsage = addUsage(result.usage, nestedUsage);
+      const totalCost = result.costUsd + nestedCostUsd;
       historyRef.current = result.messages;
       store.setTitleIfEmpty(session.id, typed);
       store.saveMessages(session.id, result.messages);
       store.addUsage(session.id, {
-        totalTokens: result.usage.totalTokens,
-        costUsd: result.costUsd,
+        totalTokens: totalUsage.totalTokens,
+        costUsd: totalCost,
       });
       const updated = store.get(session.id);
       if (updated) setSession(updated);
-      const meta = `${result.usage.totalTokens} tokens · ${formatCost(result.costUsd)}`;
+      const meta = `${totalUsage.totalTokens} tokens · ${formatCost(totalCost)}`;
       if (acc.trim()) {
         setStreaming('');
         addEntry({ role: 'assistant', text: acc, meta });
