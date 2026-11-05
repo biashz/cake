@@ -1560,26 +1560,8 @@ body.is-resizing {
   color: var(--faint);
 }
 
-.bubble-user .bubble-mark {
-  color: var(--accent);
-}
-
 .bubble-body {
   min-width: 0;
-}
-
-.bubble-user .bubble-body {
-  padding: 10px 13px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-
-.bubble-text {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.6;
-  color: var(--text);
 }
 
 .bubble-assistant .markdown {
@@ -1639,12 +1621,29 @@ body.is-resizing {
 }
 
 .entry-note {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   padding-left: 52px;
   font-size: 11.5px;
   color: var(--faint);
+  line-height: 1.55;
+}
+
+.entry-note-kind {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.entry-note-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  line-height: 1.55;
 }
 
 .entry-error {
@@ -1726,13 +1725,153 @@ body.is-resizing {
   padding: 4px 8px;
 }
 
+/* ---------------- turns: one request, everything done about it ---------------- */
+
+.turn {
+  display: grid;
+  gap: 9px;
+  padding: 6px 0 14px;
+}
+
+.turn + .turn {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.turn-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 3px 5px;
+  background: none;
+  border: none;
+  border-radius: var(--r-ctl);
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.turn-head:hover {
+  background: var(--row-hover);
+}
+
+.turn-seq {
+  flex: none;
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  color: var(--accent);
+}
+
+/* the request is the headline; collapsed it is a two-line clamped summary */
+.turn-prompt {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  line-height: 1.35;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.turn.is-open .turn-prompt {
+  display: block;
+  -webkit-line-clamp: unset;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.turn-stats {
+  flex: none;
+  font-size: var(--fs-label);
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.turn-caret {
+  flex: none;
+  width: 10px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.turn-body {
+  display: grid;
+  gap: 9px;
+  padding-left: 14px;
+  border-left: 2px solid var(--border);
+}
+
+/* the turn body already indents, so flat-transcript gutters would double up */
+.turn-body .entry-note,
+.turn-body .entry-error {
+  padding-left: 0;
+}
+
 /* ---------------- tool calls ---------------- */
 
-.tool-run {
+.tool-group {
+  display: grid;
+  gap: 5px;
+}
+
+.tool-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  background: none;
+  border: none;
+  border-radius: var(--r-ctl);
+  text-align: left;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tool-group-head:hover {
+  background: var(--panel-2);
+}
+
+.tool-group-caret {
+  flex: none;
+  width: 9px;
+  color: var(--faint);
+}
+
+.tool-group-count {
+  flex: none;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.tool-group-tally {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--faint);
+}
+
+.tool-group-failed {
+  margin-left: auto;
+  color: var(--bad);
+}
+
+.tool-group-running {
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.tool-group-body {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  padding-left: 52px;
 }
 
 .tool-card {
@@ -1842,6 +1981,111 @@ body.is-resizing {
   color: var(--bad);
 }
 
+/* ---------------- the live subagent tree ---------------- */
+
+.agent-branch {
+  display: grid;
+  gap: 6px;
+  padding: 9px 11px 11px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.agent-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.agent-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.agent-dot.is-running {
+  background: var(--accent);
+  animation: heat-throb 1.4s var(--ease) infinite;
+}
+
+.agent-type {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.agent-count,
+.agent-tokens {
+  color: var(--faint);
+}
+
+.agent-prompt {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+.agent-kids {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0 0 0 2px;
+  list-style: none;
+  border-left: 1px solid var(--border-strong);
+  padding-left: 10px;
+}
+
+.agent-kid {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 11px;
+}
+
+.agent-kid-target {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.agent-text-toggle {
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.agent-text-toggle:hover {
+  color: var(--accent);
+  background: none;
+}
+
+.agent-text pre {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+}
+
 /* ---------------- diff ---------------- */
 
 .diff {
@@ -1884,6 +2128,46 @@ body.is-resizing {
 
 .diff-count-remove {
   color: var(--remove-fg);
+}
+
+/* A hunk is the unit a reviewer reads: where it sits, what it costs, collapsible. */
+.diff-hunk + .diff-hunk {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.diff-hunk-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 2px 11px;
+  border: 0;
+  background: var(--panel-2);
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diff-hunk-at {
+  color: var(--faint);
+}
+
+.diff-hunk-caret {
+  margin-left: auto;
+  color: var(--faint);
+}
+
+.diff-hidden {
+  margin: 4px 0 0;
+  padding: 0 11px;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
 }
 
 /* ---------------- approvals ---------------- */
@@ -2506,8 +2790,7 @@ button.stop:hover:not(:disabled) {
 }
 
 /* biome-ignore lint/style/noDescendingSpecificity: distinct lists, no shared elements */
-.rule-list li,
-.server-row {
+.rule-list li {
   padding: 4px 7px;
   border-radius: 5px;
   background: var(--panel-2);
@@ -2520,6 +2803,49 @@ button.stop:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+/* The servers list: one bordered block per configured server. */
+.server-item {
+  padding: 5px 7px 6px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.server-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.server-state {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.server-target {
+  margin: 0;
+  padding-left: 15px;
+  font-size: 10px;
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+
+.server-changes {
+  margin: 6px 0 0;
+  padding: 0 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10.5px;
 }
 
 .doctor-summary {
@@ -2611,6 +2937,273 @@ button.stop:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* The plan is a counter ticket: marks in mono, one quiet bar, no decoration. */
+.plan-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plan-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.plan-progress {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.plan-active {
+  font-size: 10px;
+  color: var(--accent-strong);
+}
+
+.plan-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.plan-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 240ms var(--ease);
+}
+
+.plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.plan-mark {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.plan-subject {
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+.plan-in_progress {
+  background: var(--heat);
+}
+
+.plan-in_progress .plan-mark {
+  color: var(--accent-strong);
+}
+
+.plan-completed .plan-subject {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+/* ---------------- cost panel ---------------- */
+
+.cost-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cost-model {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.rate-table {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 8px;
+}
+
+.rate-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px 54px auto;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  font-size: 10.5px;
+  color: var(--text-soft);
+}
+
+.rate-pattern {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rate-value {
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.rate-slot {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* the column labels, not a ticket of their own */
+.rate-head {
+  padding: 0 7px;
+  background: none;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.rate-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* inherited transform/spacing belongs to the label, not the value being typed */
+.rate-field :is(input, select) {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-deep);
+  color: var(--text-soft);
+  font-family: inherit;
+  font-size: 11.5px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.rate-field :is(input, select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.rate-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.rate-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+/* rules editor */
+.rule-scope-block + .rule-scope-block {
+  margin-top: 8px;
+}
+
+.rule-scope-label {
+  margin: 0 0 3px 7px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.rule-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rule-move {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rule-move:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text-soft);
+}
+
+.rule-move:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.rule-move:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.rule-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.rule-preview {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+.rule-preview.is-empty {
+  color: var(--muted);
+}
+
+.tab-flag {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--warn);
 }
 
 .files-search {
@@ -2783,6 +3376,29 @@ button.stop:hover:not(:disabled) {
   margin: 16px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.palette-section {
+  display: block;
+}
+
+.palette-mark {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text);
+  border-radius: 2px;
+}
+
+.palette-none {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0 10px;
+}
+
+.palette-suggest {
+  margin: 0 16px;
+  font-size: 10.5px;
+  color: var(--faint);
 }
 
 .palette-footer {
@@ -2969,10 +3585,11 @@ button.stop:hover:not(:disabled) {
     padding-left: 44px;
   }
 
-  .tool-run {
-    padding-left: 44px;
+  .turn-body {
+    padding-left: 9px;
   }
 
+  .turn-seq,
   .tool-seq {
     display: none;
   }

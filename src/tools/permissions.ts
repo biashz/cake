@@ -4,6 +4,7 @@ import {
   type CakeTool,
   type PermissionClass,
   type PermissionMode,
+  type PermissionPreview,
   type ToolContext,
   ToolDeniedError,
 } from './types.js';
@@ -64,11 +65,21 @@ export async function authorize(
   if (!danger && rule === 'allow') return;
   if (!danger && policy === 'allow') return;
 
+  let preview: PermissionPreview | undefined;
+  if (tool.preview) {
+    try {
+      preview = await tool.preview(args, ctx.cwd);
+    } catch {
+      // A preview is a courtesy; the prompt still makes sense without one.
+    }
+  }
+
   const decision = await ctx.askPermission({
     tool: tool.name,
     permission,
     target: tool.summarize(args),
     ...(danger ? { danger } : {}),
+    ...(preview ? { preview } : {}),
   });
   if (decision !== 'allow') {
     throw new ToolDeniedError(

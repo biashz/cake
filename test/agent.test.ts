@@ -81,7 +81,7 @@ describe('runAgent multi-step tool loop', () => {
     });
 
     const events: AgentEvent[] = [];
-    const ctx: ToolContext = { cwd, askPermission: async () => 'allow', log: () => {} };
+    const ctx: ToolContext = { cwd, tasks: [], askPermission: async () => 'allow', log: () => {} };
     const result = await runAgent(
       {
         model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
@@ -151,7 +151,7 @@ describe('runAgent multi-step tool loop', () => {
     });
 
     const events: AgentEvent[] = [];
-    const ctx: ToolContext = { cwd, askPermission: async () => 'deny', log: () => {} };
+    const ctx: ToolContext = { cwd, tasks: [], askPermission: async () => 'deny', log: () => {} };
     const result = await runAgent(
       {
         model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },

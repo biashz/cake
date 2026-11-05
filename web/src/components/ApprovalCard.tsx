@@ -1,4 +1,8 @@
 import type { PermissionRequestPayload } from '../../../src/desktop/api.js';
+import { DiffView } from './ToolCard';
+
+/** Enough of the change to judge it; the full diff stays in the tool card. */
+const PREVIEW_LINES = 60;
 
 export function ApprovalCard({
   request,
@@ -23,6 +27,11 @@ export function ApprovalCard({
         </div>
         <p className="approval-title">Allow this action?</p>
         <div className="approval-target mono">{request.target}</div>
+        {request.preview ? (
+          <div className="approval-preview" data-testid="approval-preview">
+            <DiffView diff={request.preview.diff} max={PREVIEW_LINES} />
+          </div>
+        ) : null}
         {request.danger ? <div className="approval-danger">danger: {request.danger}</div> : null}
         <div className="approval-actions">
           <button

@@ -14,7 +14,7 @@ beforeEach(async () => {
   await execa('git', ['init'], { cwd });
   await execa('git', ['config', 'user.email', 'cake@example.com'], { cwd });
   await execa('git', ['config', 'user.name', 'Cake Test'], { cwd });
-  ctx = { cwd, askPermission: async () => 'allow', log: () => {} };
+  ctx = { cwd, tasks: [], askPermission: async () => 'allow', log: () => {} };
 });
 
 afterEach(async () => {

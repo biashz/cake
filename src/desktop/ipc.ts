@@ -1,11 +1,16 @@
 import { z } from 'zod';
 import type { AgentEvent } from '../core/events.js';
+import type { Pricing } from '../core/pricing.js';
 import type {
   ContextPayload,
   DoctorReportPayload,
   InitPayload,
+  McpDraft,
   PermissionDecisionName,
   PermissionModeName,
+  RuleListName,
+  RuleMove,
+  RuleScopeName,
   RunResult,
   SessionInfo,
   SessionPayload,
@@ -24,7 +29,19 @@ export interface DesktopBackend {
   respondPermission(id: string, decision: PermissionDecisionName): void;
   setModel(model: { provider: string; modelId: string }): Promise<InitPayload>;
   setMode(mode: PermissionModeName): Promise<InitPayload>;
+  setPricing(pattern: string, rates: Pricing | null): Promise<InitPayload>;
+  addRule(list: RuleListName, scope: RuleScopeName, rule: string): Promise<InitPayload>;
+  removeRule(list: RuleListName, scope: RuleScopeName, rule: string): Promise<InitPayload>;
+  moveRule(
+    list: RuleListName,
+    scope: RuleScopeName,
+    rule: string,
+    delta: RuleMove,
+  ): Promise<InitPayload>;
   reloadMcp(): Promise<InitPayload>;
+  setMcpServer(scope: RuleScopeName, draft: McpDraft): Promise<InitPayload>;
+  removeMcpServer(scope: RuleScopeName, name: string): Promise<InitPayload>;
+  setMcpEnabled(scope: RuleScopeName, name: string, enabled: boolean): Promise<InitPayload>;
   listFiles(query: string): Promise<string[]>;
   runDoctor(): Promise<DoctorReportPayload>;
   contextLayers(): ContextPayload;
@@ -70,6 +87,51 @@ const filesSchema = z.object({
   query: z.string().max(200).default(''),
 });
 
+/** Rates are USD per 1M tokens; a typo should not produce a $1B run. */
+const pricingRatesSchema = z.object({
+  inputPer1M: z.number().finite().nonnegative().max(100_000),
+  outputPer1M: z.number().finite().nonnegative().max(100_000),
+});
+
+const pricingSchema = z.object({
+  pattern: z.string().min(1).max(200),
+  rates: pricingRatesSchema.nullable(),
+});
+
+/** Rule syntax is checked by the kernel, which can name the shape it wants. */
+const ruleSchema = z.object({
+  action: z.enum(['add', 'remove']),
+  list: z.enum(['allow', 'deny']),
+  scope: z.enum(['project', 'global']),
+  rule: z.string().min(1).max(200),
+});
+
+const ruleMoveSchema = z.object({
+  list: z.enum(['allow', 'deny']),
+  scope: z.enum(['project', 'global']),
+  rule: z.string().min(1).max(200),
+  delta: z.union([z.literal(-1), z.literal(1)]),
+});
+
+const mcpScopeSchema = z.enum(['project', 'global']);
+
+/** The entry itself is validated by the kernel writer, which can name the field. */
+const mcpServerSchema = z.object({
+  scope: mcpScopeSchema,
+  draft: z.record(z.string(), z.unknown()),
+});
+
+const mcpNameSchema = z.object({
+  scope: mcpScopeSchema,
+  name: z.string().min(1).max(64),
+});
+
+const mcpEnabledSchema = z.object({
+  scope: mcpScopeSchema,
+  name: z.string().min(1).max(64),
+  enabled: z.boolean(),
+});
+
 function validate<T>(schema: z.ZodType<T>, payload: unknown): T {
   const result = schema.safeParse(payload);
   if (!result.success) {
@@ -105,7 +167,33 @@ export function createHandlers(backend: DesktopBackend): Record<string, Handler>
     },
     'model:set': async (payload) => backend.setModel(validate(modelSchema, payload)),
     'mode:set': async (payload) => backend.setMode(validate(modeSchema, payload).mode),
+    'pricing:set': async (payload) => {
+      const { pattern, rates } = validate(pricingSchema, payload);
+      return backend.setPricing(pattern, rates);
+    },
     'mcp:reload': async () => backend.reloadMcp(),
+    'mcp:set': async (payload) => {
+      const { scope, draft } = validate(mcpServerSchema, payload);
+      return backend.setMcpServer(scope, draft as McpDraft);
+    },
+    'mcp:remove': async (payload) => {
+      const { scope, name } = validate(mcpNameSchema, payload);
+      return backend.removeMcpServer(scope, name);
+    },
+    'mcp:enabled': async (payload) => {
+      const { scope, name, enabled } = validate(mcpEnabledSchema, payload);
+      return backend.setMcpEnabled(scope, name, enabled);
+    },
+    'rules:set': async (payload) => {
+      const { action, list, scope, rule } = validate(ruleSchema, payload);
+      return action === 'add'
+        ? backend.addRule(list, scope, rule)
+        : backend.removeRule(list, scope, rule);
+    },
+    'rules:move': async (payload) => {
+      const { list, scope, rule, delta } = validate(ruleMoveSchema, payload);
+      return backend.moveRule(list, scope, rule, delta);
+    },
     'files:list': async (payload) => backend.listFiles(validate(filesSchema, payload ?? {}).query),
     'doctor:run': async () => backend.runDoctor(),
     'context:layers': async () => backend.contextLayers(),
@@ -117,6 +205,8 @@ export function toWireEvent(event: AgentEvent): unknown {
   if (event.type === 'tool-error') {
     return {
       type: 'tool-error',
+      callId: event.callId,
+      ...(event.agentCallId === undefined ? {} : { agentCallId: event.agentCallId }),
       toolName: event.toolName,
       error: { name: event.error.name, message: event.error.message },
     };

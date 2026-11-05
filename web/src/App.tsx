@@ -1,16 +1,22 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatCost } from '../../src/core/cost.js';
+import type { Pricing } from '../../src/core/pricing.js';
 import type {
   ContextPayload,
   DoctorReportPayload,
   InitPayload,
+  McpDraft,
   ModelHandle,
   PermissionModeName,
   PermissionRequestPayload,
+  RuleListName,
+  RuleMove,
+  RuleScopeName,
   SessionInfo,
   SessionPayload,
   TokenTotals,
 } from '../../src/desktop/api.js';
+import type { TaskItem } from '../../src/tools/types.js';
 import { collectChanges } from './changes';
 import { ApprovalCard } from './components/ApprovalCard';
 import { CommandPalette, type PaletteAction } from './components/CommandPalette';
@@ -31,13 +37,21 @@ import {
   INSPECTOR_RESET,
   loadPrefs,
   nextTheme,
+  pushRecent,
   RAIL_RANGE,
   RAIL_RESET,
   savePrefs,
   THEME_LABEL,
   type UiPrefs,
 } from './prefs';
-import { attachToolResult, type Entry, entriesFromMessages } from './transcript';
+import {
+  addToolCall,
+  attachToolResult,
+  type Entry,
+  endAgent,
+  entriesFromMessages,
+  startAgent,
+} from './transcript';
 
 const MODE_NAMES: PermissionModeName[] = ['plan', 'default', 'acceptEdits', 'yolo'];
 
@@ -51,6 +65,7 @@ const HELP_TEXT = [
   'Shortcuts',
   'Ctrl K  command palette   Ctrl N  new session',
   'Ctrl B  sessions          Ctrl J  inspector',
+  'Ctrl P  plan',
   '@  mention a file         /  commands      Enter  send',
 ].join('\n');
 
@@ -129,10 +144,13 @@ export function App() {
   const [lastUsage, setLastUsage] = useState<TokenTotals | null>(null);
   const [context, setContext] = useState<ContextPayload | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  /** The model the kernel actually started this turn on, which may differ from init. */
+  const [runModel, setRunModel] = useState<ModelHandle | null>(null);
   const [doctor, setDoctor] = useState<DoctorReportPayload | null>(null);
   const [doctorBusy, setDoctorBusy] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('changes');
+  const [plan, setPlan] = useState<TaskItem[]>([]);
   const [focusToken, setFocusToken] = useState(0);
   const [modelMenuSignal, setModelMenuSignal] = useState(0);
   const [modeMenuSignal, setModeMenuSignal] = useState(0);
@@ -151,7 +169,7 @@ export function App() {
 
   const addEntry = useCallback((entry: Omit<Entry, 'id'>) => {
     const id = nextId.current++;
-    setEntries((list) => [...list, { ...entry, id }]);
+    setEntries((list) => [...list, { ...entry, at: Date.now(), id }]);
   }, []);
 
   /** Streaming text lives in a ref and is flushed to React state at most every 50ms. */
@@ -172,6 +190,7 @@ export function App() {
       switch (event.type) {
         case 'start': {
           setStartedAt(Date.now());
+          setRunModel(event.model);
           break;
         }
         case 'text-delta': {
@@ -187,28 +206,52 @@ export function App() {
         case 'tool-call': {
           const text = takeStream();
           if (text.trim()) addEntry({ role: 'assistant', text });
-          addEntry({
-            role: 'tool',
-            tool: { name: event.toolName, input: event.input, status: 'running' },
-          });
+          setEntries((list) =>
+            addToolCall(
+              list,
+              {
+                callId: event.callId,
+                name: event.toolName,
+                input: event.input,
+                status: 'running',
+              },
+              () => nextId.current++,
+              event.agentCallId,
+            ),
+          );
           break;
         }
         case 'tool-result':
-          setEntries((list) => attachToolResult(list, event.toolName, event.output, 'done'));
+          setEntries((list) =>
+            attachToolResult(list, event.callId, event.output, 'done', event.toolName),
+          );
           break;
         case 'tool-error':
           setEntries((list) =>
-            attachToolResult(list, event.toolName, event.error.message, 'error'),
+            attachToolResult(list, event.callId, event.error.message, 'error', event.toolName),
           );
           break;
         case 'subagent-start':
-          addEntry({ role: 'info', text: `subagent ${event.agentType}: ${event.prompt}` });
+          setEntries((list) =>
+            startAgent(
+              list,
+              event.callId,
+              { type: event.agentType, prompt: event.prompt },
+              () => nextId.current++,
+            ),
+          );
           break;
         case 'subagent-end':
-          addEntry({
-            role: 'info',
-            text: `subagent ${event.agentType} finished · ${event.usage.totalTokens} tokens`,
-          });
+          setEntries((list) =>
+            endAgent(list, event.callId, {
+              text: event.text,
+              tokens: event.usage.totalTokens,
+              costUsd: event.costUsd,
+            }),
+          );
+          break;
+        case 'plan':
+          setPlan(event.tasks);
           break;
         case 'finish': {
           const text = takeStream();
@@ -262,6 +305,7 @@ export function App() {
     setEntries(restored);
     setApprovals([]);
     setLastUsage(null);
+    setPlan(payload.plan);
     setInit((current) =>
       current
         ? {
@@ -317,7 +361,7 @@ export function App() {
     if (!api) return;
     const offs = [
       api.onAgentEvent(handleEvent),
-      api.onAgentNote((note) => addEntry({ role: 'info', text: `${note.kind}: ${note.text}` })),
+      api.onAgentNote((note) => addEntry({ role: 'note', kind: note.kind, text: note.text })),
       api.onPermissionRequest((request) => setApprovals((list) => [...list, request])),
       api.onMcpStatus((status) =>
         setInit((current) => (current ? { ...current, mcpStatus: status } : current)),
@@ -535,11 +579,89 @@ export function App() {
 
   const showCost = useCallback(() => {
     const current = sessions.find((session) => session.id === init?.workspace?.sessionId);
+    const spent = current?.costUsd ?? 0;
+    // A zero from an unpriced model is unknown, not free.
+    const priced = Boolean(init?.cost.effective) || spent > 0;
     addEntry({
       role: 'info',
-      text: `session ${current?.totalTokens ?? 0} tokens · ${formatCost(current?.costUsd ?? 0)}`,
+      text: `session ${current?.totalTokens ?? 0} tokens · ${priced ? formatCost(spent) : 'no price set'}`,
     });
-  }, [addEntry, init?.workspace?.sessionId, sessions]);
+  }, [addEntry, init?.cost.effective, init?.workspace?.sessionId, sessions]);
+
+  const setPricingRate = useCallback(async (pattern: string, rates: Pricing | null) => {
+    const api = window.cake;
+    if (!api) return;
+    try {
+      setInit(await api.setPricing(pattern, rates));
+      setError(null);
+    } catch (err) {
+      setError(message(err));
+    }
+  }, []);
+
+  const setRule = useCallback(
+    async (action: 'add' | 'remove', list: RuleListName, scope: RuleScopeName, rule: string) => {
+      const api = window.cake;
+      if (!api) return;
+      try {
+        setInit(await api.setRule(action, list, scope, rule));
+        setError(null);
+      } catch (err) {
+        setError(message(err));
+      }
+    },
+    [],
+  );
+
+  const moveRule = useCallback(
+    async (list: RuleListName, scope: RuleScopeName, rule: string, delta: RuleMove) => {
+      const api = window.cake;
+      if (!api) return;
+      try {
+        setInit(await api.moveRule(list, scope, rule, delta));
+        setError(null);
+      } catch (err) {
+        setError(message(err));
+      }
+    },
+    [],
+  );
+
+  const setMcpServer = useCallback(async (scope: RuleScopeName, draft: McpDraft) => {
+    const api = window.cake;
+    if (!api) return;
+    try {
+      setInit(await api.setMcpServer(scope, draft));
+      setError(null);
+    } catch (err) {
+      setError(message(err));
+    }
+  }, []);
+
+  const toggleMcpServer = useCallback(
+    async (scope: RuleScopeName, name: string, enabled: boolean) => {
+      const api = window.cake;
+      if (!api) return;
+      try {
+        setInit(await api.setMcpEnabled(scope, name, enabled));
+        setError(null);
+      } catch (err) {
+        setError(message(err));
+      }
+    },
+    [],
+  );
+
+  const removeMcpServer = useCallback(async (scope: RuleScopeName, name: string) => {
+    const api = window.cake;
+    if (!api) return;
+    try {
+      setInit(await api.removeMcpServer(scope, name));
+      setError(null);
+    } catch (err) {
+      setError(message(err));
+    }
+  }, []);
 
   const runSlash = useCallback(
     (raw: string): boolean => {
@@ -623,6 +745,7 @@ export function App() {
       setRunning(false);
       setApprovals([]);
       setStartedAt(null);
+      setRunModel(null);
       const leftover = takeStream();
       if (leftover.trim()) addEntry({ role: 'assistant', text: leftover });
       await refreshSessions();
@@ -675,6 +798,16 @@ export function App() {
     });
   }, []);
 
+  const planVisible = prefs.inspectorOpen && inspectorTab === 'plan';
+
+  const togglePlan = useCallback(() => {
+    if (planVisible) {
+      toggleInspector();
+      return;
+    }
+    openInspector('plan');
+  }, [planVisible, openInspector, toggleInspector]);
+
   useEffect(() => {
     const onResize = () => {
       if (window.innerWidth >= 860) return;
@@ -723,11 +856,14 @@ export function App() {
       } else if (key === 'j') {
         event.preventDefault();
         toggleInspector();
+      } else if (key === 'p') {
+        event.preventDefault();
+        togglePlan();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [paletteOpen, newSession, toggleRail, toggleInspector]);
+  }, [paletteOpen, newSession, toggleRail, toggleInspector, togglePlan]);
 
   const changes = useMemo(() => collectChanges(entries), [entries]);
 
@@ -739,6 +875,7 @@ export function App() {
         label: 'New session',
         group: 'Session',
         hint: 'Ctrl N',
+        keywords: 'clear reset start over',
         disabled: !hasWorkspace || running,
         run: () => void newSession(),
       },
@@ -746,6 +883,7 @@ export function App() {
         id: 'model',
         label: 'Switch model…',
         group: 'Session',
+        keywords: 'provider claude deepseek gpt anthropic',
         disabled: !hasWorkspace,
         run: () => setModelMenuSignal((value) => value + 1),
       },
@@ -753,6 +891,7 @@ export function App() {
         id: 'mode',
         label: 'Switch permission mode…',
         group: 'Session',
+        keywords: 'plan default acceptEdits yolo approve',
         disabled: !hasWorkspace,
         run: () => setModeMenuSignal((value) => value + 1),
       },
@@ -760,6 +899,7 @@ export function App() {
         id: 'cost',
         label: 'Show session cost',
         group: 'Session',
+        keywords: 'tokens spend usage price bill',
         disabled: !hasWorkspace,
         run: showCost,
       },
@@ -767,6 +907,7 @@ export function App() {
         id: 'open-workspace',
         label: 'Open folder…',
         group: 'Workspace',
+        keywords: 'project directory recent',
         disabled: running,
         run: () => void openWorkspace(),
       },
@@ -774,13 +915,23 @@ export function App() {
         id: 'reload-mcp',
         label: 'Reload MCP servers',
         group: 'Workspace',
+        keywords: 'tools connect restart',
         disabled: !hasWorkspace || running,
         run: () => void reloadMcp(),
+      },
+      {
+        id: 'pricing',
+        label: 'Set model rates…',
+        group: 'Workspace',
+        keywords: 'price cost usd per million rate card dollar',
+        disabled: !hasWorkspace,
+        run: () => openInspector('cost'),
       },
       {
         id: 'doctor',
         label: 'Run diagnostics',
         group: 'Workspace',
+        keywords: 'doctor checks health index keys',
         run: () => {
           openInspector('context');
           void runDoctorChecks();
@@ -791,6 +942,7 @@ export function App() {
         label: prefs.railOpen ? 'Hide sessions' : 'Show sessions',
         group: 'View',
         hint: 'Ctrl B',
+        keywords: 'sidebar list left panel',
         run: toggleRail,
       },
       {
@@ -798,12 +950,22 @@ export function App() {
         label: prefs.inspectorOpen ? 'Hide inspector' : 'Show inspector',
         group: 'View',
         hint: 'Ctrl J',
+        keywords: 'context files changes right panel',
         run: toggleInspector,
+      },
+      {
+        id: 'toggle-plan',
+        label: planVisible ? 'Hide plan' : 'Show plan',
+        group: 'View',
+        hint: 'Ctrl P',
+        keywords: 'todo checklist steps progress task plan',
+        run: togglePlan,
       },
       {
         id: 'theme',
         label: `Switch to the ${THEME_LABEL[nextTheme(prefs.theme)]} palette`,
         group: 'View',
+        keywords: 'theme dark light cocoa flour colours appearance',
         run: toggleTheme,
       },
     ];
@@ -814,6 +976,7 @@ export function App() {
         label: session.title || 'Untitled session',
         group: 'Sessions',
         hint: session.model,
+        keywords: `${session.cwd} ${session.model}`,
         disabled: running || session.id === init?.workspace?.sessionId,
         run: () => void openSession(session.id),
       });
@@ -835,6 +998,8 @@ export function App() {
     openInspector,
     toggleRail,
     toggleInspector,
+    planVisible,
+    togglePlan,
     toggleTheme,
   ]);
 
@@ -850,6 +1015,9 @@ export function App() {
   const workspace = init.workspace;
   const activeSession = sessions.find((session) => session.id === workspace?.sessionId) ?? null;
   const activeProvider = init.providers.find((provider) => provider.id === init.model.provider);
+  const runProvider = runModel
+    ? init.providers.find((provider) => provider.id === runModel.provider)
+    : undefined;
 
   const frameStyle = {
     '--rail-w': `${prefs.railWidth}px`,
@@ -915,8 +1083,8 @@ export function App() {
 
             <HeatBar
               running={running}
-              providerLabel={activeProvider?.label ?? init.model.provider}
-              modelId={init.model.modelId}
+              providerLabel={runProvider?.label ?? activeProvider?.label ?? init.model.provider}
+              modelId={runModel?.modelId ?? init.model.modelId}
               mode={init.mode}
               startedAt={startedAt}
               costUsd={activeSession?.costUsd ?? 0}
@@ -1038,20 +1206,34 @@ export function App() {
           context={context}
           lastUsage={lastUsage}
           changes={changes}
+          plan={plan}
           tab={inspectorTab}
           doctor={doctor}
           doctorBusy={doctorBusy}
           onTab={setInspectorTab}
           onClose={toggleInspector}
           onRunDoctor={() => void runDoctorChecks()}
-          onReloadMcp={() => void reloadMcp()}
+          onReloadMcp={reloadMcp}
+          onSetMcpServer={setMcpServer}
+          onToggleMcpServer={toggleMcpServer}
+          onRemoveMcpServer={removeMcpServer}
           onInsertFile={insertFile}
+          onSetPricing={setPricingRate}
+          onSetRule={setRule}
+          onMoveRule={moveRule}
         />
       ) : null}
 
       <CommandPalette
         open={paletteOpen}
         actions={paletteActions}
+        recents={prefs.recentActions}
+        onRun={(id) =>
+          setPrefs((current) => ({
+            ...current,
+            recentActions: pushRecent(current.recentActions, id),
+          }))
+        }
         onClose={() => setPaletteOpen(false)}
       />
     </div>

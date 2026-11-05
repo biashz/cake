@@ -30,7 +30,16 @@ const api: CakeApi = {
 
   setModel: (model) => ipcRenderer.invoke('model:set', model),
   setMode: (mode) => ipcRenderer.invoke('mode:set', { mode }),
+  setPricing: (pattern, rates) => ipcRenderer.invoke('pricing:set', { pattern, rates }),
+  setRule: (action, list, scope, rule) =>
+    ipcRenderer.invoke('rules:set', { action, list, scope, rule }),
+  moveRule: (list, scope, rule, delta) =>
+    ipcRenderer.invoke('rules:move', { list, scope, rule, delta }),
   reloadMcp: () => ipcRenderer.invoke('mcp:reload'),
+  setMcpServer: (scope, draft) => ipcRenderer.invoke('mcp:set', { scope, draft }),
+  removeMcpServer: (scope, name) => ipcRenderer.invoke('mcp:remove', { scope, name }),
+  setMcpEnabled: (scope, name, enabled) =>
+    ipcRenderer.invoke('mcp:enabled', { scope, name, enabled }),
   listFiles: (query) => ipcRenderer.invoke('files:list', { query }),
   runDoctor: () => ipcRenderer.invoke('doctor:run'),
   contextLayers: () => ipcRenderer.invoke('context:layers'),

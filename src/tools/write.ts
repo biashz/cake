@@ -1,6 +1,7 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { lineDiff } from '../core/diff.js';
 import { resolveInside, toPosix } from './fs-utils.js';
 import type { CakeTool } from './types.js';
 
@@ -19,6 +20,11 @@ export const writeTool: CakeTool<Args, string> = {
   inputSchema: schema,
   summarize: (args) => `${args.path} (${args.content.length} chars)`,
   matchTarget: (args) => args.path,
+  async preview(args, cwd) {
+    const abs = resolveInside(cwd, args.path);
+    const before = await readFile(abs, 'utf8').catch(() => '');
+    return { path: toPosix(path.relative(cwd, abs)), diff: lineDiff(before, args.content) };
+  },
   async execute(args, ctx) {
     const abs = resolveInside(ctx.cwd, args.path);
     await mkdir(path.dirname(abs), { recursive: true });

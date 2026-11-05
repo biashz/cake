@@ -6,6 +6,7 @@ import { loadConfig } from './config/config.js';
 import { buildSystemPrompt, loadProjectInstructions } from './core/context.js';
 import { formatCost } from './core/cost.js';
 import type { AgentEvent } from './core/events.js';
+import type { PricingOverrides } from './core/pricing.js';
 import { formatDoctor, runDoctor } from './diagnostics/doctor.js';
 import { openMcpServers } from './mcp/client.js';
 import { createTrace } from './observability/trace.js';
@@ -127,6 +128,7 @@ async function main(): Promise<void> {
         mode,
         rules: settings.permissions,
         maxContext,
+        pricing: config.pricing,
         embedder,
         mcpTools: mcp.tools,
       });
@@ -152,6 +154,7 @@ async function main(): Promise<void> {
       session={session}
       initialMessages={history}
       maxContext={maxContext}
+      pricing={config.pricing}
       embedder={embedder}
       mcpTools={mcp.tools}
     />,
@@ -196,6 +199,7 @@ interface HeadlessOptions {
   mode: PermissionMode;
   rules: PermissionRules;
   maxContext: number;
+  pricing: PricingOverrides;
   embedder?: Embedder;
   mcpTools?: CakeTool[];
 }
@@ -212,6 +216,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
     mode,
     rules,
     maxContext,
+    pricing,
     embedder,
     mcpTools = [],
   } = options;
@@ -224,6 +229,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
 
   const ctx: ToolContext = {
     cwd,
+    tasks: [],
     askPermission: async (request) => {
       const danger = request.danger ? ` [danger: ${request.danger}]` : '';
       process.stderr.write(
@@ -264,6 +270,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
       systemBase: system,
       mode,
       rules,
+      pricing,
       abortSignal: controller.signal,
       onEvent: handleEvent,
     });
@@ -279,6 +286,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
       history,
       prompt,
       maxContext,
+      pricing,
       embedder,
       ctx,
       abortSignal: controller.signal,

@@ -1,4 +1,6 @@
 import type { ModelMessage } from 'ai';
+import type { Pricing, PricingSource } from '../core/pricing.js';
+import type { PermissionPreview, TaskItem } from '../tools/types.js';
 
 /**
  * Wire contract shared by the Electron main process, the preload bridge, and the
@@ -20,9 +22,25 @@ export interface TokenTotals {
   totalTokens: number;
 }
 
-export interface PermissionRuleSet {
-  allow: string[];
-  deny: string[];
+export type RuleScopeName = 'project' | 'global';
+export type RuleListName = 'allow' | 'deny';
+/** One slot in the list: -1 up, 1 down. */
+export type RuleMove = -1 | 1;
+
+/** One rule as the Inspector lists it, tagged with the file that holds it. */
+export interface RuleRow {
+  rule: string;
+  scope: RuleScopeName;
+}
+
+export interface RulesPayload {
+  /** Workspace rules first, then global, each in the order its file lists them. */
+  allow: RuleRow[];
+  deny: RuleRow[];
+  /** Where each scope's rules are stored; the workspace file is null until one is open. */
+  files: Record<RuleScopeName, string | null>;
+  /** Rules set in both lists; deny wins, so their allow side never fires. */
+  conflicts: string[];
 }
 
 export interface ProviderSummary {
@@ -33,15 +51,78 @@ export interface ProviderSummary {
   hasKey: boolean;
 }
 
+/** One configured MCP server, as the Inspector lists it. */
+export interface McpServerRow {
+  name: string;
+  transport: 'stdio' | 'http';
+  scope: RuleScopeName;
+  enabled: boolean;
+  connected: boolean;
+  tools: number;
+  /** Why it is not live; null while connected or switched off. */
+  error: string | null;
+  /** The entry as written, so an edit starts from what is really configured. */
+  target: { command: string; args: string[] } | { url: string };
+  /** The permission class the file pins; null means each tool's own annotation decides. */
+  permission: PermissionClass | null;
+}
+
 export interface McpStatus {
+  /** Names of the servers that connected; the sidebar shows a live count. */
   servers: string[];
   tools: number;
   warnings: string[];
+  /** One row per configured server, live or not. */
+  rows: McpServerRow[];
+  /** Where each scope's servers are declared; null until a workspace is open. */
+  files: Record<RuleScopeName, string | null>;
+  /** What the last connect changed, empty on the first read. */
+  changes: string[];
 }
+
+/** What the Inspector can author for one server; the kernel validates on write. */
+export type McpDraft =
+  | {
+      name: string;
+      transport: 'stdio';
+      command: string;
+      args: string[];
+      permission?: PermissionClass;
+      enabled?: boolean;
+    }
+  | {
+      name: string;
+      transport: 'http';
+      url: string;
+      permission?: PermissionClass;
+      enabled?: boolean;
+    };
 
 export interface WorkspaceInfo {
   cwd: string;
   sessionId: string;
+}
+
+/** One priced `provider/model-substring` row, as the Inspector displays it. */
+export interface PricingRow {
+  pattern: string;
+  inputPer1M: number;
+  outputPer1M: number;
+}
+
+export interface CostPayload {
+  /** The model whose rates are shown. */
+  model: ModelHandle;
+  /** The row that answered for `model`; null when cake has no price for it. */
+  effective: PricingRow | null;
+  /** Where `effective` came from; null when there is no rate. */
+  source: PricingSource | null;
+  /** Rows written by config, which win over the built-in card. */
+  overrides: PricingRow[];
+  /** The shipped reference card. */
+  builtin: PricingRow[];
+  /** Where editing this workspace's rates writes; null when no workspace is open. */
+  configFile: string | null;
 }
 
 export interface SessionInfo {
@@ -59,6 +140,8 @@ export interface SessionInfo {
 export interface SessionPayload {
   session: SessionInfo;
   messages: ModelMessage[];
+  /** The checklist the session left off with, so a switch does not lose it. */
+  plan: TaskItem[];
 }
 
 export type ContextLayerId = 'system' | 'project' | 'retrieved' | 'history' | 'turn';
@@ -93,9 +176,13 @@ export interface InitPayload {
   providers: ProviderSummary[];
   model: ModelHandle;
   mode: PermissionModeName;
-  rules: PermissionRuleSet;
+  rules: RulesPayload;
   mcpStatus: McpStatus;
   missingKeys: string[];
+  /** Rate card for the open model, with the config rows that override it. */
+  cost: CostPayload;
+  /** Checklist of the open session; empty when no workspace is open. */
+  plan: TaskItem[];
 }
 
 export interface RunResult {
@@ -124,6 +211,7 @@ export interface PermissionRequestPayload {
   permission: PermissionClass;
   target: string;
   danger?: string;
+  preview?: PermissionPreview;
 }
 
 export type AgentNoteKind = 'index' | 'codebase' | 'files' | 'context';
@@ -152,7 +240,28 @@ export interface CakeApi {
 
   setModel(model: ModelHandle): Promise<InitPayload>;
   setMode(mode: PermissionModeName): Promise<InitPayload>;
+  /** Write or remove (with null) this workspace's rate for one `provider/model` pattern. */
+  setPricing(pattern: string, rates: Pricing | null): Promise<InitPayload>;
+  /** Add or drop a `tool(pattern)` rule in one scope's allow/deny list. */
+  setRule(
+    action: 'add' | 'remove',
+    list: RuleListName,
+    scope: RuleScopeName,
+    rule: string,
+  ): Promise<InitPayload>;
+  /** Nudge a rule one slot within its own scope's list. */
+  moveRule(
+    list: RuleListName,
+    scope: RuleScopeName,
+    rule: string,
+    delta: RuleMove,
+  ): Promise<InitPayload>;
   reloadMcp(): Promise<InitPayload>;
+  /** Write one server entry, replacing the one with the same name in that scope. */
+  setMcpServer(scope: RuleScopeName, draft: McpDraft): Promise<InitPayload>;
+  removeMcpServer(scope: RuleScopeName, name: string): Promise<InitPayload>;
+  /** Switch a configured server off or on; the entry keeps its other fields. */
+  setMcpEnabled(scope: RuleScopeName, name: string, enabled: boolean): Promise<InitPayload>;
   listFiles(query: string): Promise<string[]>;
   runDoctor(): Promise<DoctorReportPayload>;
   /** Composition of the context window, layer by layer, for the Slice. */

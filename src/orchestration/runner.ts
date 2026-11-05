@@ -1,15 +1,19 @@
 import { runAgent } from '../core/agent.js';
 import type { AgentEvent } from '../core/events.js';
+import type { PricingOverrides } from '../core/pricing.js';
 import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
 import { buildToolSet } from '../tools/registry.js';
-import type { CakeTool, PermissionMode, ToolContext } from '../tools/types.js';
+import type { CakeTool, PermissionMode, TaskItem, ToolContext } from '../tools/types.js';
 import { systemPromptFor } from './prompts.js';
 import type { AgentType, SubAgentOutcome, SubAgentSpec } from './types.js';
 
 const READ_ONLY_TYPES = new Set<AgentType>(['explore', 'plan']);
 const DEFAULT_MAX_STEPS = 12;
+
+/** Ids for callers that run a child without a model tool call behind it (tests). */
+let anonymousRuns = 0;
 
 /** Options shared by every child run spawned from one parent turn. */
 export interface SubAgentRunnerOptions {
@@ -22,6 +26,8 @@ export interface SubAgentRunnerOptions {
   tools: CakeTool[];
   mode: PermissionMode;
   rules: PermissionRules;
+  /** Rate-card additions inherited from the parent config. */
+  pricing?: PricingOverrides;
   abortSignal?: AbortSignal;
   onEvent?: (event: AgentEvent) => void;
 }
@@ -45,17 +51,27 @@ export async function runSubAgent(
   const readOnly = READ_ONLY_TYPES.has(spec.type);
   const mode: PermissionMode = readOnly ? 'plan' : options.mode;
   const model = spec.model ?? options.model;
+  /** The parent `agent` tool call this run belongs to, or a stand-in when there is none. */
+  const runId = parentCtx.callId ?? `${spec.type}-anonymous-${++anonymousRuns}`;
 
-  if (!parentCtx.tasks) parentCtx.tasks = [];
   const ctx: ToolContext = {
     cwd: parentCtx.cwd,
     askPermission: parentCtx.askPermission,
     log: parentCtx.log,
     tasks: parentCtx.tasks,
+    // A child works on the same plan, so its steps are visible while it runs.
+    ...(options.onEvent
+      ? { onPlan: (tasks: TaskItem[]) => options.onEvent?.({ type: 'plan', tasks }) }
+      : {}),
     ...(parentCtx.onUsage ? { onUsage: parentCtx.onUsage } : {}),
   };
 
-  options.onEvent?.({ type: 'subagent-start', agentType: spec.type, prompt: spec.prompt });
+  options.onEvent?.({
+    type: 'subagent-start',
+    callId: runId,
+    agentType: spec.type,
+    prompt: spec.prompt,
+  });
 
   let result: Awaited<ReturnType<typeof runAgent>>;
   try {
@@ -66,11 +82,24 @@ export async function runSubAgent(
         tools: buildToolSet(toolsFor(spec.type, options.tools), ctx, mode, options.rules),
         messages: [{ role: 'user', content: spec.prompt }],
         maxSteps: Math.min(spec.maxSteps ?? DEFAULT_MAX_STEPS, 40),
+        ...(options.pricing ? { pricing: options.pricing } : {}),
         abortSignal: options.abortSignal,
         onEvent: (event) => {
-          if (event.type === 'tool-call' || event.type === 'tool-error') {
-            options.onEvent?.({ ...event, toolName: `${spec.type}:${event.toolName}` });
+          if (
+            event.type !== 'tool-call' &&
+            event.type !== 'tool-result' &&
+            event.type !== 'tool-error'
+          ) {
+            return;
           }
+          // Names and ids are prefixed so the parent UI can tell whose child a
+          // call is, and so two children using the same tool cannot collide.
+          options.onEvent?.({
+            ...event,
+            callId: `${runId}/${event.callId}`,
+            agentCallId: runId,
+            toolName: `${spec.type}:${event.toolName}`,
+          });
         },
       },
       options.registry,
@@ -78,6 +107,7 @@ export async function runSubAgent(
   } catch (err) {
     options.onEvent?.({
       type: 'subagent-end',
+      callId: runId,
       agentType: spec.type,
       prompt: spec.prompt,
       text: `(failed: ${(err as Error).message})`,
@@ -91,6 +121,7 @@ export async function runSubAgent(
   const text = result.text.trim() || '(subagent produced no text)';
   options.onEvent?.({
     type: 'subagent-end',
+    callId: runId,
     agentType: spec.type,
     prompt: spec.prompt,
     text,

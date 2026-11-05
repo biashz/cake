@@ -10,6 +10,7 @@ const fixture = path.join(here, 'fixtures', 'mcp-echo-server.mjs');
 
 const ctx = {
   cwd: process.cwd(),
+  tasks: [],
   askPermission: async () => 'allow',
   log: () => {},
 } as ToolContext;
@@ -24,6 +25,8 @@ function stdioConfig(overrides: Partial<McpServerConfig> = {}): McpServerConfig 
     maxTools: 24,
     baseDir: here,
     source: fixture,
+    scope: 'project',
+    enabled: true,
     ...overrides,
   } as McpServerConfig;
 }
@@ -34,6 +37,19 @@ describe('connectMcpServers over stdio', () => {
     try {
       expect(bundle.servers).toEqual(['fixture']);
       expect(bundle.warnings).toEqual([]);
+      expect(bundle.status).toEqual([
+        {
+          name: 'fixture',
+          transport: 'stdio',
+          scope: 'project',
+          enabled: true,
+          connected: true,
+          tools: 2,
+          error: null,
+          target: { command: process.execPath, args: [fixture] },
+          permission: null,
+        },
+      ]);
       const echo = bundle.tools.find((tool) => tool.name === 'mcp__fixture__echo');
       expect(echo).toBeDefined();
       expect(echo?.permission).toBe('read');
@@ -46,6 +62,7 @@ describe('connectMcpServers over stdio', () => {
   it('keeps extra tools behind the meta tool when maxTools is exceeded', async () => {
     const bundle = await connectMcpServers([stdioConfig({ maxTools: 1 })], { cwd: here });
     try {
+      expect(bundle.status[0]).toMatchObject({ connected: true, tools: 2 });
       const names = bundle.tools.map((tool) => tool.name);
       expect(names).toContain('mcp__fixture__more');
       expect(names.filter((name) => name === 'mcp__fixture__echo').length).toBeLessThanOrEqual(1);
@@ -72,6 +89,52 @@ describe('connectMcpServers over stdio', () => {
       expect(bundle.tools).toEqual([]);
       expect(warnings).toHaveLength(1);
       expect(warnings[0] ?? '').toMatch(/broken/);
+      expect(bundle.status).toEqual([
+        {
+          name: 'broken',
+          transport: 'stdio',
+          scope: 'project',
+          enabled: true,
+          connected: false,
+          tools: 0,
+          error: warnings[0] ?? null,
+          target: { command: path.join(here, 'missing-binary'), args: [fixture] },
+          permission: null,
+        },
+      ]);
+    } finally {
+      await bundle.close();
+    }
+  }, 20_000);
+
+  it('leaves a disabled server unconnected and reports it as off', async () => {
+    const bundle = await connectMcpServers(
+      [
+        stdioConfig({
+          name: 'doomed',
+          command: path.join(here, 'missing-binary'),
+          enabled: false,
+          permission: 'read',
+        }),
+      ],
+      { cwd: here, connectTimeoutMs: 5_000 },
+    );
+    try {
+      expect(bundle.servers).toEqual([]);
+      expect(bundle.warnings).toEqual([]);
+      expect(bundle.status).toEqual([
+        {
+          name: 'doomed',
+          transport: 'stdio',
+          scope: 'project',
+          enabled: false,
+          connected: false,
+          tools: 0,
+          error: null,
+          target: { command: path.join(here, 'missing-binary'), args: [fixture] },
+          permission: 'read',
+        },
+      ]);
     } finally {
       await bundle.close();
     }

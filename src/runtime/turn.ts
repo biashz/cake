@@ -4,6 +4,7 @@ import { createHistorySummarizer, maybeCompress } from '../core/context.js';
 import { addUsage } from '../core/cost.js';
 import type { AgentEvent, TokenUsage } from '../core/events.js';
 import { expandFileReferences } from '../core/mentions.js';
+import type { PricingOverrides } from '../core/pricing.js';
 import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
@@ -30,6 +31,8 @@ export interface TurnOptions {
   history: ModelMessage[];
   prompt: string;
   maxContext: number;
+  /** Rate-card additions from config, used when costing this turn. */
+  pricing?: PricingOverrides;
   embedder?: Embedder;
   ctx: ToolContext;
   abortSignal: AbortSignal;
@@ -92,6 +95,7 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
   let nestedCostUsd = 0;
   const ctx: ToolContext = {
     ...options.ctx,
+    onPlan: (tasks) => options.onEvent({ type: 'plan', tasks }),
     onUsage: (usage, costUsd) => {
       const total = addUsage(nestedUsage, usage);
       nestedUsage.inputTokens = total.inputTokens;
@@ -109,6 +113,7 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
       tools: buildToolSet(options.tools, ctx, options.mode, options.rules),
       messages,
       abortSignal,
+      ...(options.pricing ? { pricing: options.pricing } : {}),
       onEvent: options.onEvent,
     },
     registry,

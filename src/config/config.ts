@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import type { PricingOverrides } from '../core/pricing.js';
 
 const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
@@ -9,9 +10,16 @@ const ProviderConfigSchema = z.object({
   model: z.string().optional(),
 });
 
+/** USD per 1M tokens, keyed by `provider/model-substring`. */
+const PricingEntrySchema = z.object({
+  inputPer1M: z.number().nonnegative(),
+  outputPer1M: z.number().nonnegative(),
+});
+
 const ConfigSchema = z.object({
   provider: z.string().optional(),
   model: z.string().optional(),
+  pricing: z.record(z.string(), PricingEntrySchema).optional(),
   providers: z
     .object({
       deepseek: ProviderConfigSchema.optional(),
@@ -34,6 +42,8 @@ export interface CakeConfig {
   provider: string;
   /** Default model id (undefined → provider default). */
   model?: string;
+  /** Rate-card additions that win over the built-in pricing table. */
+  pricing: PricingOverrides;
   providers: {
     deepseek?: ProviderConfig;
     anthropic?: ProviderConfig;
@@ -91,7 +101,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): CakeConfig {
     providers.anthropic = { ...providers.anthropic, baseURL: env.ANTHROPIC_BASE_URL };
   if (env.OPENAI_BASE_URL) providers.openai = { ...providers.openai, baseURL: env.OPENAI_BASE_URL };
 
-  return { provider, model, providers };
+  return { provider, model, pricing: merged.pricing ?? {}, providers };
 }
 
 function readConfigFile(path: string): RawConfig | undefined {
@@ -121,6 +131,7 @@ function mergeConfigs(base?: RawConfig, override?: RawConfig): RawConfig {
   return {
     provider: override.provider ?? base.provider,
     model: override.model ?? base.model,
+    pricing: { ...base.pricing, ...override.pricing },
     providers: {
       deepseek: { ...base.providers?.deepseek, ...override.providers?.deepseek },
       anthropic: { ...base.providers?.anthropic, ...override.providers?.anthropic },

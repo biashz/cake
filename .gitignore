@@ -12,3 +12,4 @@ playwright-report/
 .cake/cache/
 .cake/index/
 release/
+scratch/

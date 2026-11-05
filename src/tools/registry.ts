@@ -41,9 +41,10 @@ export function buildToolSet(
     set[item.name] = aiTool({
       description: item.description,
       inputSchema: item.inputSchema,
-      execute: async (args: unknown) => {
-        await authorize(item, args, ctx, mode, rules);
-        return item.execute(args, ctx);
+      execute: async (args: unknown, call: { toolCallId: string }) => {
+        const perCall: ToolContext = { ...ctx, callId: call.toolCallId };
+        await authorize(item, args, perCall, mode, rules);
+        return item.execute(args, perCall);
       },
     });
   }

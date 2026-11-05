@@ -6,20 +6,28 @@ import type { PermissionClass } from '../tools/types.js';
 
 const PermissionSchema = z.enum(['read', 'write', 'shell']);
 
+/** Where a server entry came from, so the panel can write back to the same file. */
+export type McpScope = 'global' | 'project';
+
+const SharedFields = {
+  /** A configured but switched-off server stays in the file and is not connected. */
+  enabled: z.boolean().optional(),
+  permission: PermissionSchema.optional(),
+  maxTools: z.number().int().min(1).optional(),
+};
+
 const StdioServerSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
   cwd: z.string().optional(),
-  permission: PermissionSchema.optional(),
-  maxTools: z.number().int().min(1).optional(),
+  ...SharedFields,
 });
 
 const HttpServerSchema = z.object({
   url: z.url(),
   headers: z.record(z.string(), z.string()).optional(),
-  permission: PermissionSchema.optional(),
-  maxTools: z.number().int().min(1).optional(),
+  ...SharedFields,
 });
 
 const ServerSchema = z.union([StdioServerSchema, HttpServerSchema]);
@@ -37,6 +45,9 @@ interface McpConfigBase {
   /** Directory used to resolve a relative `cwd`. */
   baseDir: string;
   source: string;
+  /** False only when the file says so; a switched-off server keeps its entry. */
+  enabled: boolean;
+  scope: McpScope;
 }
 
 export interface McpStdioConfig extends McpConfigBase {
@@ -118,7 +129,12 @@ function readFile(file: string): unknown | undefined {
 function parseServer(
   name: string,
   value: unknown,
-  options: { baseDir: string; source: string; env: Record<string, string | undefined> },
+  options: {
+    baseDir: string;
+    source: string;
+    scope: McpScope;
+    env: Record<string, string | undefined>;
+  },
 ): McpServerConfig {
   const parsed = ServerSchema.safeParse(value);
   if (!parsed.success) {
@@ -130,6 +146,8 @@ function parseServer(
     maxTools: parsed.data.maxTools ?? DEFAULT_MAX_TOOLS,
     baseDir: options.baseDir,
     source: options.source,
+    enabled: parsed.data.enabled ?? true,
+    scope: options.scope,
   };
   if ('command' in parsed.data) {
     return {
@@ -159,6 +177,7 @@ function parseServer(
 function parseFile(
   file: string,
   baseDir: string,
+  scope: McpScope,
   env: Record<string, string | undefined>,
 ): McpServerConfig[] {
   const raw = readFile(file);
@@ -168,7 +187,7 @@ function parseFile(
     throw new Error(`Invalid MCP config at ${file}: ${parsed.error.message}`);
   }
   return Object.entries(parsed.data.mcpServers).map(([name, value]) =>
-    parseServer(name, value, { baseDir, source: file, env }),
+    parseServer(name, value, { baseDir, source: file, scope, env }),
   );
 }
 
@@ -185,11 +204,11 @@ export function loadMcpConfig(options: McpLoadOptions = {}): McpConfigResult {
 
   const merged = new Map<string, McpServerConfig>();
   const files: string[] = [];
-  for (const [file, baseDir] of [
-    [paths.global, home],
-    [paths.project, cwd],
+  for (const [file, baseDir, scope] of [
+    [paths.global, home, 'global'],
+    [paths.project, cwd, 'project'],
   ] as const) {
-    const servers = parseFile(file, baseDir, env);
+    const servers = parseFile(file, baseDir, scope, env);
     if (servers.length > 0) files.push(file);
     for (const server of servers) merged.set(server.name, server);
   }

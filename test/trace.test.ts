@@ -27,9 +27,15 @@ describe('createTrace', () => {
 
     trace.record({ type: 'start', model: { provider: 'anthropic', modelId: 'claude' } });
     trace.record({ type: 'text-delta', delta: 'ignored' });
-    trace.record({ type: 'tool-call', toolName: 'read', input: { path: 'a.ts' } });
+    trace.record({
+      type: 'tool-call',
+      callId: 'call-1',
+      toolName: 'read',
+      input: { path: 'a.ts' },
+    });
     trace.record({
       type: 'tool-error',
+      callId: 'call-2',
       toolName: 'bash',
       error: new Error('boom'),
     });
@@ -45,7 +51,13 @@ describe('createTrace', () => {
   it('truncates oversized payloads', async () => {
     const trace = createTrace(cwd, { CAKE_TRACE: '1' });
     if (!trace) throw new Error('trace disabled');
-    trace.record({ type: 'tool-result', toolName: 'read', input: {}, output: 'x'.repeat(5_000) });
+    trace.record({
+      type: 'tool-result',
+      callId: 'call-1',
+      toolName: 'read',
+      input: {},
+      output: 'x'.repeat(5_000),
+    });
 
     const line = JSON.parse((await readFile(trace.file, 'utf8')).trim()) as {
       output: string;

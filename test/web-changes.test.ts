@@ -3,7 +3,7 @@ import { changeStats, collectChanges, diffForTool } from '../web/src/changes';
 import type { Entry, ToolInfo } from '../web/src/transcript';
 
 function tool(name: string, input: unknown, status: ToolInfo['status'] = 'done'): ToolInfo {
-  return { name, input, status };
+  return { callId: `${name}-1`, name, input, status };
 }
 
 function toolEntry(id: number, info: ToolInfo): Entry {
@@ -11,26 +11,32 @@ function toolEntry(id: number, info: ToolInfo): Entry {
 }
 
 describe('diffForTool', () => {
+  const diffLines = (info: ToolInfo) => diffForTool(info).lines;
+
   it('diffs edit old/new strings', () => {
-    expect(
-      diffForTool(tool('edit', { path: 'a.ts', old_string: 'one', new_string: 'two' })),
-    ).toEqual([
-      { type: 'remove', text: 'one' },
-      { type: 'add', text: 'two' },
-    ]);
+    expect(diffLines(tool('edit', { path: 'a.ts', old_string: 'one', new_string: 'two' }))).toEqual(
+      [
+        { type: 'remove', text: 'one' },
+        { type: 'add', text: 'two' },
+      ],
+    );
   });
 
   it('treats a write as all additions', () => {
-    expect(diffForTool(tool('write', { path: 'a.ts', content: 'x\ny' }))).toEqual([
+    expect(diffLines(tool('write', { path: 'a.ts', content: 'x\ny' }))).toEqual([
       { type: 'add', text: 'x' },
       { type: 'add', text: 'y' },
     ]);
   });
 
   it('returns nothing for read-only tools or malformed input', () => {
-    expect(diffForTool(tool('read', { path: 'a.ts' }))).toEqual([]);
-    expect(diffForTool(tool('edit', { old_string: 'one' }))).toEqual([]);
-    expect(diffForTool(tool('write', null))).toEqual([]);
+    for (const info of [
+      tool('read', { path: 'a.ts' }),
+      tool('edit', { old_string: 'one' }),
+      tool('write', null),
+    ]) {
+      expect(diffForTool(info)).toEqual({ lines: [], adds: 0, removes: 0, hidden: 0 });
+    }
   });
 });
 
@@ -58,7 +64,7 @@ describe('collectChanges', () => {
       status: 'done',
       tool: 'edit',
     });
-    expect(change?.diff).toEqual([
+    expect(change?.diff.lines).toEqual([
       { type: 'remove', text: 'one' },
       { type: 'add', text: 'two' },
     ]);

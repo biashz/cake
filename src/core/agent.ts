@@ -3,6 +3,7 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
 import { estimateCost, normalizeUsage } from './cost.js';
 import type { AgentEvent, TokenUsage } from './events.js';
+import type { PricingOverrides } from './pricing.js';
 
 export interface AgentRun {
   model: ModelSpec;
@@ -13,6 +14,8 @@ export interface AgentRun {
   tools?: ToolSet;
   /** Upper bound on model↔tool steps in one run (default 20). */
   maxSteps?: number;
+  /** Rate-card additions used when costing this run. */
+  pricing?: PricingOverrides;
   abortSignal?: AbortSignal;
   onEvent?: (event: AgentEvent) => void;
 }
@@ -58,18 +61,29 @@ export async function runAgent(run: AgentRun, registry: ProviderRegistry): Promi
           emit({ type: 'text-delta', delta: part.text });
           break;
         case 'tool-call':
-          emit({ type: 'tool-call', toolName: part.toolName, input: part.input });
+          emit({
+            type: 'tool-call',
+            callId: part.toolCallId,
+            toolName: part.toolName,
+            input: part.input,
+          });
           break;
         case 'tool-result':
           emit({
             type: 'tool-result',
+            callId: part.toolCallId,
             toolName: part.toolName,
             input: part.input,
             output: part.output,
           });
           break;
         case 'tool-error':
-          emit({ type: 'tool-error', toolName: part.toolName, error: toError(part.error) });
+          emit({
+            type: 'tool-error',
+            callId: part.toolCallId,
+            toolName: part.toolName,
+            error: toError(part.error),
+          });
           break;
         case 'error':
           throw toError(part.error);
@@ -87,7 +101,7 @@ export async function runAgent(run: AgentRun, registry: ProviderRegistry): Promi
   }
 
   const usage = await readUsage(result);
-  const costUsd = estimateCost(run.model, usage);
+  const costUsd = estimateCost(run.model, usage, run.pricing);
   emit({ type: 'finish', text, usage, costUsd });
   return { text, messages: await collectMessages(run.messages, result), usage, costUsd };
 }

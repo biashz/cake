@@ -14,6 +14,7 @@ import type { ToolContext } from '../src/tools/types.js';
 
 const ctx = {
   cwd: process.cwd(),
+  tasks: [],
   askPermission: async () => 'allow',
   log: () => {},
 } as ToolContext;

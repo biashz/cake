@@ -15,7 +15,7 @@ let ctx: ToolContext;
 
 beforeEach(async () => {
   cwd = await mkdtemp(path.join(tmpdir(), 'cake-tools-'));
-  ctx = { cwd, askPermission: async () => 'allow', log: () => {} };
+  ctx = { cwd, tasks: [], askPermission: async () => 'allow', log: () => {} };
 });
 
 afterEach(async () => {

@@ -35,7 +35,7 @@ function fakeEmbedder(): Embedder {
 }
 
 function context(cwd: string): ToolContext {
-  return { cwd, askPermission: async () => 'allow', log: () => {} };
+  return { cwd, tasks: [], askPermission: async () => 'allow', log: () => {} };
 }
 
 afterEach(async () => {

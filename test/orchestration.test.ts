@@ -71,11 +71,13 @@ let cwd: string;
 let events: AgentEvent[];
 let recorded: Array<{ usage: TokenUsage; costUsd: number }>;
 
-function context(): ToolContext {
+function context(callId?: string): ToolContext {
   return {
     cwd,
+    tasks: [],
     askPermission: async () => 'allow',
     log: () => {},
+    ...(callId === undefined ? {} : { callId }),
     onUsage: (usage, costUsd) => recorded.push({ usage, costUsd }),
   };
 }
@@ -132,6 +134,34 @@ describe('subagents', () => {
     expect(events.filter((event) => event.type === 'subagent-start')).toHaveLength(1);
     const end = events.find((event) => event.type === 'subagent-end');
     expect(end).toMatchObject({ agentType: 'explore', text: 'Found alpha in note.txt.' });
+  });
+
+  it('ties every child call to the agent call that spawned it', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        toolCallStream('read', { path: 'note.txt' }, 'child-read-1'),
+        textStream('Found it.', 9, 2),
+      ],
+    });
+    const tool = createAgentTool(agentOptions(model));
+
+    await tool.execute({ type: 'explore', prompt: 'where is alpha?' }, context('agent-call-1'));
+
+    const start = events.find((event) => event.type === 'subagent-start');
+    expect(start).toMatchObject({ callId: 'agent-call-1', agentType: 'explore' });
+
+    const childCall = events.find(
+      (event) => event.type === 'tool-call' && event.toolName === 'explore:read',
+    );
+    expect(childCall).toMatchObject({
+      callId: 'agent-call-1/child-read-1',
+      agentCallId: 'agent-call-1',
+    });
+
+    const childResult = events.find(
+      (event) => event.type === 'tool-result' && event.toolName === 'explore:read',
+    );
+    expect(childResult).toMatchObject({ callId: 'agent-call-1/child-read-1' });
   });
 
   it('lets a general subagent write under the parent permission mode', async () => {

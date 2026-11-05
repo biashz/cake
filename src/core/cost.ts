@@ -1,45 +1,13 @@
 import type { ModelSpec } from '../providers/types.js';
 import type { TokenUsage } from './events.js';
+import { type PricingOverrides, resolvePricing } from './pricing.js';
 
-interface Pricing {
-  /** USD per 1M input tokens. */
-  inputPer1M: number;
-  /** USD per 1M output tokens. */
-  outputPer1M: number;
-}
+export type { Pricing, PricingOverrides } from './pricing.js';
 
 /**
- * Approximate list pricing (USD per 1M tokens). This is a M0 skeleton: values are
- * indicative and matched by model-id substring. Externalizing/validating pricing is
- * deferred — see plan decision register.
+ * Approximate list pricing lives in `pricing.js` and can be overridden per
+ * workspace in `.cake/config.json`. See that file for the matching rules.
  */
-const PRICING_RULES: ReadonlyArray<{ match: (spec: ModelSpec) => boolean; pricing: Pricing }> = [
-  {
-    match: (s) => s.provider === 'anthropic' && s.modelId.includes('opus'),
-    pricing: { inputPer1M: 15, outputPer1M: 75 },
-  },
-  {
-    match: (s) => s.provider === 'anthropic' && s.modelId.includes('haiku'),
-    pricing: { inputPer1M: 1, outputPer1M: 5 },
-  },
-  {
-    match: (s) => s.provider === 'anthropic' && s.modelId.includes('sonnet'),
-    pricing: { inputPer1M: 3, outputPer1M: 15 },
-  },
-  {
-    // Cache-miss list prices; cached input is cheaper.
-    match: (s) => s.provider === 'deepseek',
-    pricing: { inputPer1M: 0.28, outputPer1M: 0.42 },
-  },
-  {
-    match: (s) => s.provider === 'openai' && s.modelId.includes('mini'),
-    pricing: { inputPer1M: 0.15, outputPer1M: 0.6 },
-  },
-  {
-    match: (s) => s.provider === 'openai' && s.modelId.startsWith('gpt-4o'),
-    pricing: { inputPer1M: 2.5, outputPer1M: 10 },
-  },
-];
 
 /** Convert the SDK's usage object (fields may be undefined) into normalized counts. */
 export function normalizeUsage(
@@ -59,14 +27,19 @@ export function addUsage(base: TokenUsage, extra: TokenUsage): TokenUsage {
   };
 }
 
-/** Estimated USD cost for a run. Returns 0 when the model has no known pricing. */ export function estimateCost(
+/**
+ * Estimated USD cost for a run. Returns 0 when the model has no known pricing —
+ * callers that show a cost should say "no price set" rather than implying free.
+ */
+export function estimateCost(
   spec: ModelSpec,
   usage: TokenUsage,
+  overrides?: PricingOverrides,
 ): number {
-  const rule = PRICING_RULES.find((r) => r.match(spec));
-  if (!rule) return 0;
-  const input = (usage.inputTokens / 1_000_000) * rule.pricing.inputPer1M;
-  const output = (usage.outputTokens / 1_000_000) * rule.pricing.outputPer1M;
+  const match = resolvePricing(spec, overrides);
+  if (!match) return 0;
+  const input = (usage.inputTokens / 1_000_000) * match.pricing.inputPer1M;
+  const output = (usage.outputTokens / 1_000_000) * match.pricing.outputPer1M;
   return round(input + output, 6);
 }
 

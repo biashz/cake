@@ -14,6 +14,8 @@ export interface UiPrefs {
   inspectorOpen: boolean;
   railWidth: number;
   inspectorWidth: number;
+  /** Command palette ids, most recent first. */
+  recentActions: string[];
 }
 
 const STORAGE_KEY = 'cake.ui.v2';
@@ -33,6 +35,7 @@ const DEFAULTS: UiPrefs = {
   inspectorOpen: true,
   railWidth: RAIL_DEFAULT,
   inspectorWidth: INSPECTOR_DEFAULT,
+  recentActions: [],
 };
 
 /** Stored names from before the palette rename still resolve. */
@@ -77,7 +80,19 @@ function normalize(parsed: Partial<UiPrefs>): UiPrefs {
     inspectorOpen: typeof parsed.inspectorOpen === 'boolean' ? parsed.inspectorOpen : true,
     railWidth: readWidth(parsed.railWidth, RAIL_RANGE, RAIL_DEFAULT),
     inspectorWidth: readWidth(parsed.inspectorWidth, INSPECTOR_RANGE, INSPECTOR_DEFAULT),
+    recentActions: Array.isArray(parsed.recentActions)
+      ? parsed.recentActions
+          .filter((id): id is string => typeof id === 'string')
+          .slice(0, RECENT_LIMIT)
+      : [],
   };
+}
+
+export const RECENT_LIMIT = 6;
+
+/** Most recent first, no duplicates, capped so the group never crowds the palette. */
+export function pushRecent(ids: string[], id: string): string[] {
+  return [id, ...ids.filter((item) => item !== id)].slice(0, RECENT_LIMIT);
 }
 
 export function savePrefs(prefs: UiPrefs): void {

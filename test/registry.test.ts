@@ -50,7 +50,7 @@ describe('createDeepSeekProvider', () => {
 describe('createDefaultRegistry', () => {
   it('registers deepseek + anthropic + openai and resolves keys from env', () => {
     const registry = createDefaultRegistry(
-      { provider: 'deepseek', providers: {} },
+      { provider: 'deepseek', pricing: {}, providers: {} },
       { DEEPSEEK_API_KEY: 'd-key', ANTHROPIC_API_KEY: 'a-key' },
     );
     expect(registry.has('deepseek')).toBe(true);
@@ -64,7 +64,7 @@ describe('createDefaultRegistry', () => {
 
   it('prefers config-file api key over nothing, and env over config', () => {
     const registry = createDefaultRegistry(
-      { provider: 'anthropic', providers: { anthropic: { apiKey: 'file-key' } } },
+      { provider: 'anthropic', pricing: {}, providers: { anthropic: { apiKey: 'file-key' } } },
       { ANTHROPIC_API_KEY: 'env-key' },
     );
     expect(registry.getApiKey('anthropic')).toBe('env-key');

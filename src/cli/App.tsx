@@ -3,6 +3,8 @@ import { Box, Text, useApp, useInput } from 'ink';
 import { useEffect, useRef, useState } from 'react';
 import { formatCost } from '../core/cost.js';
 import type { AgentEvent } from '../core/events.js';
+import { planProgress } from '../core/plan.js';
+import type { PricingOverrides } from '../core/pricing.js';
 import { createTrace } from '../observability/trace.js';
 import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -16,6 +18,8 @@ import type {
   PermissionDecision,
   PermissionMode,
   PermissionRequest,
+  TaskItem,
+  TaskStatus,
   ToolContext,
 } from '../tools/types.js';
 
@@ -45,6 +49,8 @@ export interface AppProps {
   session: SessionMeta;
   initialMessages: ModelMessage[];
   maxContext: number;
+  /** Rate-card additions from config; costs use them for every model. */
+  pricing: PricingOverrides;
   embedder?: Embedder;
   mcpTools?: CakeTool[];
 }
@@ -57,6 +63,12 @@ const COMMANDS = [
   '/exit            quit (or Ctrl+C)',
 ].join('\n');
 
+const PLAN_MARKS: Record<TaskStatus, string> = {
+  pending: '[ ]',
+  in_progress: '[~]',
+  completed: '[x]',
+};
+
 function preview(value: unknown, max = 160): string {
   const raw = typeof value === 'string' ? value : JSON.stringify(value ?? '');
   const line = (raw ?? '').split('\n').find((item) => item.trim() !== '') ?? '';
@@ -64,7 +76,7 @@ function preview(value: unknown, max = 160): string {
 }
 
 export function App(props: AppProps) {
-  const { registry, permissionMode, rules, system, store, maxContext, embedder } = props;
+  const { registry, permissionMode, rules, system, store, maxContext, pricing, embedder } = props;
   const mcpTools = props.mcpTools ?? [];
   const { exit } = useApp();
   const [model, setModel] = useState<ModelSpec>(props.model);
@@ -81,6 +93,7 @@ export function App(props: AppProps) {
   const abortedRef = useRef(false);
   const [trace] = useState(() => createTrace(process.cwd()));
   const traceAnnounced = useRef(false);
+  const [plan, setPlan] = useState<TaskItem[]>(() => store.plan(props.session.id));
 
   useEffect(() => () => store.close(), [store]);
 
@@ -107,6 +120,7 @@ export function App(props: AppProps) {
           model: model.modelId,
         });
         setSession(next);
+        setPlan([]);
         historyRef.current = [];
         setEntries([]);
         setStreaming('');
@@ -229,17 +243,27 @@ export function App(props: AppProps) {
             text: `↳ ${event.agentType} done · ${event.usage.totalTokens} tokens · ${formatCost(event.costUsd)}`,
           });
           break;
+        case 'plan':
+          setPlan(event.tasks);
+          store.savePlan(session.id, event.tasks);
+          break;
       }
     }
 
     const cwd = process.cwd();
-    const ctx: ToolContext = { cwd, askPermission, log: () => {} };
+    const ctx: ToolContext = {
+      cwd,
+      askPermission,
+      log: () => {},
+      tasks: plan,
+    };
     const tools = buildToolCatalog(embedder, mcpTools, {
       registry,
       model,
       systemBase: system,
       mode: permissionMode,
       rules,
+      pricing,
       abortSignal: controller.signal,
       onEvent: handleEvent,
     });
@@ -256,6 +280,7 @@ export function App(props: AppProps) {
         history: historyRef.current,
         prompt: typed,
         maxContext,
+        pricing,
         embedder,
         ctx,
         abortSignal: controller.signal,
@@ -403,6 +428,29 @@ export function App(props: AppProps) {
         ) : null}
       </Box>
 
+      {plan.length > 0 ? (
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor="gray"
+          paddingX={1}
+          marginBottom={1}
+        >
+          <Text dimColor>
+            plan · {planProgress(plan).done}/{plan.length} done
+          </Text>
+          {plan.map((task) => (
+            <Text
+              key={task.id}
+              color={task.status === 'in_progress' ? 'yellow' : undefined}
+              dimColor={task.status === 'completed'}
+            >
+              {`${PLAN_MARKS[task.status]} ${task.id}. ${task.subject}`}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+
       {approval ? (
         <Box
           flexDirection="column"
@@ -417,6 +465,12 @@ export function App(props: AppProps) {
             </Text>{' '}
             {approval.request.tool} ({approval.request.permission}) → {approval.request.target}
           </Text>
+          {approval.request.preview ? (
+            <Text dimColor>
+              {approval.request.preview.path ?? 'change'} · +{approval.request.preview.diff.adds} −
+              {approval.request.preview.diff.removes}
+            </Text>
+          ) : null}
           {approval.request.danger ? (
             <Text bold color="red">
               danger: {approval.request.danger}

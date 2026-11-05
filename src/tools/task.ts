@@ -37,15 +37,19 @@ export const taskTool: CakeTool<Args, string> = {
   },
   matchTarget: () => 'task',
   async execute(args, ctx) {
-    if (!ctx.tasks) ctx.tasks = [];
     const tasks = ctx.tasks;
+    const report = () => {
+      // A snapshot, not a live list: an event is a point in time.
+      ctx.onPlan?.(tasks.map((task) => ({ ...task })));
+      return render(tasks);
+    };
 
     switch (args.action) {
       case 'add': {
         if (!args.subject?.trim()) throw new Error('task add requires a subject');
         const id = tasks.reduce((max, task) => Math.max(max, task.id), 0) + 1;
         tasks.push({ id, subject: args.subject.trim(), status: 'pending' });
-        return render(tasks);
+        return report();
       }
       case 'update': {
         if (args.id === undefined) throw new Error('task update requires an id');
@@ -53,10 +57,11 @@ export const taskTool: CakeTool<Args, string> = {
         if (!task) throw new Error(`No task with id ${args.id}`);
         if (args.status) task.status = args.status;
         if (args.subject?.trim()) task.subject = args.subject.trim();
-        return render(tasks);
+        return report();
       }
       case 'clear': {
         tasks.length = 0;
+        ctx.onPlan?.([]);
         return 'Task list cleared';
       }
       default:

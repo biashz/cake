@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
   ContextPayload,
+  CostPayload,
   DoctorReportPayload,
   InitPayload,
+  McpStatus,
+  RulesPayload,
   RunResult,
   SessionInfo,
   SessionPayload,
@@ -14,6 +17,46 @@ import {
   workspaceOpenSchema,
 } from '../src/desktop/ipc.js';
 
+const costPayload: CostPayload = {
+  model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+  effective: { pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 },
+  source: 'builtin',
+  overrides: [{ pattern: 'deepseek/deepseek-chat', inputPer1M: 0.2, outputPer1M: 0.27 }],
+  builtin: [{ pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 }],
+  configFile: '/tmp/demo/.cake/config.json',
+};
+
+const rulesPayload: RulesPayload = {
+  allow: [{ rule: 'read', scope: 'global' }],
+  deny: [
+    { rule: 'bash(rm *)', scope: 'project' },
+    { rule: 'edit(.git/*)', scope: 'project' },
+  ],
+  files: { global: '/home/u/.cake/settings.json', project: '/tmp/demo/.cake/settings.json' },
+  conflicts: [],
+};
+
+const mcpStatusPayload: McpStatus = {
+  servers: ['files'],
+  tools: 2,
+  warnings: [],
+  rows: [
+    {
+      name: 'files',
+      transport: 'stdio',
+      scope: 'project',
+      enabled: true,
+      connected: true,
+      tools: 2,
+      error: null,
+      target: { command: 'npx', args: ['-y', 'server.js'] },
+      permission: null,
+    },
+  ],
+  files: { global: '/home/u/.cake/mcp.json', project: '/tmp/demo/.cake/mcp.json' },
+  changes: ['files added — online with 2 tools'],
+};
+
 const initPayload: InitPayload = {
   version: '0.1.0',
   workspace: null,
@@ -21,9 +64,11 @@ const initPayload: InitPayload = {
   providers: [],
   model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
   mode: 'default',
-  rules: { allow: [], deny: [] },
-  mcpStatus: { servers: [], tools: 0, warnings: [] },
+  rules: rulesPayload,
+  mcpStatus: mcpStatusPayload,
   missingKeys: [],
+  cost: costPayload,
+  plan: [],
 };
 
 const contextPayload: ContextPayload = {
@@ -59,7 +104,7 @@ const session: SessionInfo = {
   updatedAt: 1,
 };
 
-const sessionPayload: SessionPayload = { session, messages: [] };
+const sessionPayload: SessionPayload = { session, messages: [], plan: [] };
 
 const runResult: RunResult = {
   sessionId: 'session-1',
@@ -86,7 +131,14 @@ function backend(): DesktopBackend {
     respondPermission: vi.fn(),
     setModel: vi.fn(async () => initPayload),
     setMode: vi.fn(async () => initPayload),
+    setPricing: vi.fn(async () => initPayload),
+    addRule: vi.fn(async () => initPayload),
+    removeRule: vi.fn(async () => initPayload),
+    moveRule: vi.fn(async () => initPayload),
     reloadMcp: vi.fn(async () => initPayload),
+    setMcpServer: vi.fn(async () => initPayload),
+    removeMcpServer: vi.fn(async () => initPayload),
+    setMcpEnabled: vi.fn(async () => initPayload),
     listFiles: vi.fn(async () => ['src/a.ts']),
     runDoctor: vi.fn(async () => doctorReport),
     contextLayers: vi.fn(() => contextPayload),
@@ -155,6 +207,124 @@ describe('desktop IPC handlers', () => {
     });
   });
 
+  it('writes and removes rates through the pricing channel', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+
+    await expect(
+      handlers['pricing:set']?.({ pattern: '', rates: { inputPer1M: 1, outputPer1M: 2 } }),
+    ).rejects.toThrow('Invalid pattern');
+    await expect(
+      handlers['pricing:set']?.({
+        pattern: 'anthropic/sonnet',
+        rates: { inputPer1M: -1, outputPer1M: 2 },
+      }),
+    ).rejects.toThrow('Invalid rates.inputPer1M');
+    await expect(
+      handlers['pricing:set']?.({
+        pattern: 'anthropic/sonnet',
+        rates: { inputPer1M: Number.MAX_VALUE, outputPer1M: 2 },
+      }),
+    ).rejects.toThrow('Invalid rates.inputPer1M');
+    expect(fake.setPricing).not.toHaveBeenCalled();
+
+    expect(
+      await handlers['pricing:set']?.({
+        pattern: 'anthropic/opus',
+        rates: { inputPer1M: 15, outputPer1M: 60 },
+      }),
+    ).toEqual(initPayload);
+    expect(fake.setPricing).toHaveBeenCalledWith('anthropic/opus', {
+      inputPer1M: 15,
+      outputPer1M: 60,
+    });
+
+    await handlers['pricing:set']?.({ pattern: 'deepseek/', rates: null });
+    expect(fake.setPricing).toHaveBeenLastCalledWith('deepseek/', null);
+  });
+
+  it('adds, removes and moves rules through the rules channels', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+
+    await expect(
+      handlers['rules:set']?.({ action: 'add', list: 'allow', scope: 'project', rule: '' }),
+    ).rejects.toThrow('Invalid rule');
+    await expect(
+      handlers['rules:set']?.({ action: 'add', list: 'maybe', scope: 'project', rule: 'read' }),
+    ).rejects.toThrow('Invalid list');
+    await expect(
+      handlers['rules:move']?.({ list: 'allow', scope: 'nowhere', rule: 'read', delta: 1 }),
+    ).rejects.toThrow('Invalid scope');
+    await expect(
+      handlers['rules:move']?.({ list: 'allow', scope: 'project', rule: 'read', delta: 2 }),
+    ).rejects.toThrow('Invalid delta');
+    expect(fake.addRule).not.toHaveBeenCalled();
+    expect(fake.moveRule).not.toHaveBeenCalled();
+
+    expect(
+      await handlers['rules:set']?.({
+        action: 'add',
+        list: 'deny',
+        scope: 'global',
+        rule: 'bash(rm *)',
+      }),
+    ).toEqual(initPayload);
+    expect(fake.addRule).toHaveBeenCalledWith('deny', 'global', 'bash(rm *)');
+
+    await handlers['rules:set']?.({
+      action: 'remove',
+      list: 'allow',
+      scope: 'project',
+      rule: 'read',
+    });
+    expect(fake.removeRule).toHaveBeenCalledWith('allow', 'project', 'read');
+
+    await handlers['rules:move']?.({
+      list: 'deny',
+      scope: 'project',
+      rule: 'bash(rm *)',
+      delta: -1,
+    });
+    expect(fake.moveRule).toHaveBeenCalledWith('deny', 'project', 'bash(rm *)', -1);
+  });
+
+  it('writes, toggles and removes MCP servers through the mcp channels', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+
+    await expect(handlers['mcp:set']?.({ scope: 'project' })).rejects.toThrow('Invalid draft');
+    await expect(
+      handlers['mcp:set']?.({ scope: 'nowhere', draft: { name: 'files', command: 'npx' } }),
+    ).rejects.toThrow('Invalid scope');
+    await expect(handlers['mcp:remove']?.({ scope: 'project', name: '' })).rejects.toThrow(
+      'Invalid name',
+    );
+    await expect(
+      handlers['mcp:enabled']?.({ scope: 'project', name: 'files', enabled: 'yes' }),
+    ).rejects.toThrow('Invalid enabled');
+    expect(fake.setMcpServer).not.toHaveBeenCalled();
+    expect(fake.removeMcpServer).not.toHaveBeenCalled();
+    expect(fake.setMcpEnabled).not.toHaveBeenCalled();
+
+    const draft = {
+      name: 'files',
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'server.js'],
+    };
+    expect(await handlers['mcp:set']?.({ scope: 'project', draft })).toEqual(initPayload);
+    expect(fake.setMcpServer).toHaveBeenCalledWith('project', draft);
+
+    expect(
+      await handlers['mcp:enabled']?.({ scope: 'global', name: 'files', enabled: false }),
+    ).toEqual(initPayload);
+    expect(fake.setMcpEnabled).toHaveBeenCalledWith('global', 'files', false);
+
+    await handlers['mcp:remove']?.({ scope: 'project', name: 'files' });
+    expect(fake.removeMcpServer).toHaveBeenCalledWith('project', 'files');
+  });
+
   it('defaults the @file query and forwards permission decisions', async () => {
     const fake = backend();
     const handlers = createHandlers(fake);
@@ -177,12 +347,14 @@ describe('wire event serialization', () => {
   it('turns tool errors into plain objects', () => {
     const wire = toWireEvent({
       type: 'tool-error',
+      callId: 'call-9',
       toolName: 'bash',
       error: new Error('denied'),
     }) as { error: { name: string; message: string } };
 
     expect(wire).toEqual({
       type: 'tool-error',
+      callId: 'call-9',
       toolName: 'bash',
       error: { name: 'Error', message: 'denied' },
     });
@@ -196,6 +368,18 @@ describe('wire event serialization', () => {
     expect(toWireEvent({ type: 'text-delta', delta: 'hi' })).toEqual({
       type: 'text-delta',
       delta: 'hi',
+    });
+  });
+
+  it('carries a plan snapshot across intact', () => {
+    expect(
+      toWireEvent({
+        type: 'plan',
+        tasks: [{ id: 1, subject: 'read code', status: 'in_progress' }],
+      }),
+    ).toEqual({
+      type: 'plan',
+      tasks: [{ id: 1, subject: 'read code', status: 'in_progress' }],
     });
   });
 });

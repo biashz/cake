@@ -51,6 +51,11 @@ describe('loadMcpConfig', () => {
       args: ['--x'],
       maxTools: 24,
       baseDir: cwd,
+      scope: 'project',
+      enabled: true,
+    });
+    expect(servers.find((server) => server.name === 'globalOnly')).toMatchObject({
+      scope: 'global',
     });
     expect(servers.find((server) => server.name === 'projectOnly')).toMatchObject({
       transport: 'http',
@@ -118,5 +123,13 @@ describe('loadMcpConfig', () => {
 
   it('returns no servers when neither config file exists', () => {
     expect(loadMcpConfig({ cwd, homeDir: home, env: {} })).toEqual({ servers: [], files: [] });
+  });
+
+  it('keeps an entry switched off, and reports which scope owns it', async () => {
+    await writeConfig(home, {
+      mcpServers: { quiet: { command: 'global-cmd', enabled: false } },
+    });
+    const { servers } = loadMcpConfig({ cwd, homeDir: home, env: {} });
+    expect(servers).toMatchObject([{ name: 'quiet', scope: 'global', enabled: false }]);
   });
 });

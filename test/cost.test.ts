@@ -55,6 +55,24 @@ describe('estimateCost', () => {
     );
     expect(cost).toBe(0);
   });
+
+  it('uses a workspace rate over the built-in card', () => {
+    const cost = estimateCost(
+      { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+      { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+      { 'anthropic/sonnet': { inputPer1M: 1, outputPer1M: 4 } },
+    );
+    expect(cost).toBeCloseTo(1, 6);
+  });
+
+  it('estimates a model the card does not know once a rate is set', () => {
+    const spec = { provider: 'ollama', modelId: 'llama3' };
+    const usage = { inputTokens: 500_000, outputTokens: 0, totalTokens: 500_000 };
+    expect(estimateCost(spec, usage)).toBe(0);
+    expect(
+      estimateCost(spec, usage, { 'ollama/llama3': { inputPer1M: 2, outputPer1M: 2 } }),
+    ).toBeCloseTo(1, 6);
+  });
 });
 
 describe('formatCost', () => {

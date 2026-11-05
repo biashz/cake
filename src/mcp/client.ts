@@ -4,17 +4,35 @@ import {
   StdioClientTransport,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { CakeTool } from '../tools/types.js';
+import type { CakeTool, PermissionClass } from '../tools/types.js';
 import { VERSION } from '../version.js';
 import { adaptMcpTool, createMcpMetaTool, type McpToolSource, mcpToolName } from './adapt.js';
-import { loadMcpConfig, type McpServerConfig } from './config.js';
+import { loadMcpConfig, type McpScope, type McpServerConfig } from './config.js';
 
 const CONNECT_TIMEOUT_MS = 15_000;
+
+/** What the panel shows per configured server: live, switched off, or failing. */
+export interface McpServerStatus {
+  name: string;
+  transport: 'stdio' | 'http';
+  scope: McpScope;
+  enabled: boolean;
+  connected: boolean;
+  tools: number;
+  /** Why it is not connected; null while live or merely switched off. */
+  error: string | null;
+  /** The entry as written, so an edit can start from what is really configured. */
+  target: { command: string; args: string[] } | { url: string };
+  /** The permission class the file pins, null when the tools decide on their own. */
+  permission: PermissionClass | null;
+}
 
 export interface McpBundle {
   tools: CakeTool[];
   /** Names of servers that connected successfully. */
   servers: string[];
+  /** One row per configured server, including those that did not connect. */
+  status: McpServerStatus[];
   warnings: string[];
   close(): Promise<void>;
 }
@@ -32,7 +50,7 @@ interface Connection {
 }
 
 function emptyBundle(): McpBundle {
-  return { tools: [], servers: [], warnings: [], close: async () => {} };
+  return { tools: [], servers: [], status: [], warnings: [], close: async () => {} };
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -118,7 +136,7 @@ async function connectOne(
   }
 }
 
-/** Connect every configured server; failures become warnings, not fatal errors. */
+/** Connect every enabled server; failures become warnings and a failed row. */
 export async function connectMcpServers(
   configs: McpServerConfig[],
   options: McpConnectOptions,
@@ -126,6 +144,7 @@ export async function connectMcpServers(
   const warnings: string[] = [];
   const connections: Connection[] = [];
   const tools: CakeTool[] = [];
+  const status: McpServerStatus[] = [];
   const used = new Set<string>();
 
   const warn = (message: string) => {
@@ -134,6 +153,21 @@ export async function connectMcpServers(
   };
 
   for (const config of configs) {
+    const row = {
+      name: config.name,
+      transport: config.transport,
+      scope: config.scope,
+      enabled: config.enabled,
+      permission: config.permission ?? null,
+      target:
+        config.transport === 'stdio'
+          ? { command: config.command, args: config.args }
+          : { url: config.url },
+    };
+    if (!config.enabled) {
+      status.push({ ...row, connected: false, tools: 0, error: null });
+      continue;
+    }
     try {
       const result = await connectOne(config, options);
       connections.push(result.connection);
@@ -144,8 +178,16 @@ export async function connectMcpServers(
         used.add(name);
         tools.push(name === tool.name ? tool : { ...tool, name });
       }
+      status.push({
+        ...row,
+        connected: true,
+        tools: result.tools.length,
+        error: null,
+      });
     } catch (err) {
-      warn((err as Error).message);
+      const message = (err as Error).message;
+      warn(message);
+      status.push({ ...row, connected: false, tools: 0, error: message });
     }
   }
 
@@ -153,6 +195,7 @@ export async function connectMcpServers(
   return {
     tools,
     servers: connections.map((connection) => connection.name),
+    status,
     warnings,
     async close() {
       if (closed) return;

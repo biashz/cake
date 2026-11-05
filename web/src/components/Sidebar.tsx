@@ -123,6 +123,8 @@ export function Sidebar({
     return [...map.entries()];
   }, [filtered]);
 
+  const mcpFailing = mcpStatus.rows.filter((row) => row.error !== null).map((row) => row.name);
+
   const startRename = (session: SessionInfo) => {
     setEditingId(session.id);
     setDraft(session.title || '');
@@ -357,10 +359,15 @@ export function Sidebar({
       </div>
 
       <div className="rail-footer">
-        <div className="mcp-line">
-          <span className={`status-dot${mcpStatus.servers.length > 0 ? ' is-live' : ''}`} />
+        <div className="mcp-line" data-testid="mcp-line">
+          <span
+            className={`status-dot${
+              mcpFailing.length > 0 ? ' is-fail' : mcpStatus.servers.length > 0 ? ' is-live' : ''
+            }`}
+          />
           <span>
-            MCP {mcpStatus.servers.length} servers · {mcpStatus.tools} tools
+            MCP {mcpStatus.servers.length} live · {mcpStatus.tools} tools
+            {mcpFailing.length > 0 ? ` · ${mcpFailing.join(', ')} failed` : ''}
           </span>
         </div>
         <button type="button" className="rail-foot-button" onClick={onDiagnostics}>

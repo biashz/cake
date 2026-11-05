@@ -1,4 +1,4 @@
-import { type DiffLine, lineDiff } from './diff';
+import { type DiffResult, lineDiff } from './diff';
 import type { Entry, ToolInfo } from './transcript';
 
 export interface FileChange {
@@ -6,14 +6,16 @@ export interface FileChange {
   ops: number;
   adds: number;
   removes: number;
-  diff: DiffLine[];
+  diff: DiffResult;
   status: 'running' | 'done' | 'error';
   tool: string;
 }
 
+const NO_DIFF: DiffResult = { lines: [], adds: 0, removes: 0, hidden: 0 };
+
 /** Diff implied by a write/edit tool call, or empty for other tools. */
-export function diffForTool(tool: ToolInfo): DiffLine[] {
-  if (typeof tool.input !== 'object' || tool.input === null) return [];
+export function diffForTool(tool: ToolInfo): DiffResult {
+  if (typeof tool.input !== 'object' || tool.input === null) return NO_DIFF;
   const input = tool.input as Record<string, unknown>;
   if (
     tool.name === 'edit' &&
@@ -25,17 +27,13 @@ export function diffForTool(tool: ToolInfo): DiffLine[] {
   if (tool.name === 'write' && typeof input.content === 'string') {
     return lineDiff('', input.content);
   }
-  return [];
+  return NO_DIFF;
 }
 
 function pathFor(tool: ToolInfo): string | undefined {
   if (typeof tool.input !== 'object' || tool.input === null) return undefined;
   const path = (tool.input as Record<string, unknown>).path;
   return typeof path === 'string' && path.trim() !== '' ? path : undefined;
-}
-
-function count(lines: DiffLine[], type: DiffLine['type']): number {
-  return lines.filter((line) => line.type === type).length;
 }
 
 /** Aggregate every write/edit in the transcript into one entry per file. */
@@ -45,16 +43,14 @@ export function collectChanges(entries: Entry[]): FileChange[] {
     if (entry.role !== 'tool' || !entry.tool) continue;
     const path = pathFor(entry.tool);
     const diff = diffForTool(entry.tool);
-    if (!path || diff.length === 0) continue;
+    if (!path || diff.lines.length === 0) continue;
 
     const previous = byPath.get(path);
-    const adds = count(diff, 'add');
-    const removes = count(diff, 'remove');
     byPath.set(path, {
       path,
       ops: (previous?.ops ?? 0) + 1,
-      adds: (previous?.adds ?? 0) + adds,
-      removes: (previous?.removes ?? 0) + removes,
+      adds: (previous?.adds ?? 0) + diff.adds,
+      removes: (previous?.removes ?? 0) + diff.removes,
       diff,
       status: entry.tool.status,
       tool: entry.tool.name,

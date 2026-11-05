@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { ModelMessage } from 'ai';
+import type { TaskItem } from '../tools/types.js';
 import { type Database, DatabaseSync } from './sqlite.js';
 
 export interface SessionMeta {
@@ -54,6 +55,15 @@ function toMeta(row: SessionRow): SessionMeta {
   };
 }
 
+function isTaskItem(value: unknown): value is TaskItem {
+  const item = value as Partial<TaskItem> | null;
+  return (
+    typeof item?.id === 'number' &&
+    typeof item.subject === 'string' &&
+    (item.status === 'pending' || item.status === 'in_progress' || item.status === 'completed')
+  );
+}
+
 const SCHEMA = `
   PRAGMA journal_mode = WAL;
   CREATE TABLE IF NOT EXISTS sessions (
@@ -65,7 +75,8 @@ const SCHEMA = `
     total_tokens INTEGER NOT NULL DEFAULT 0,
     cost_usd REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    plan TEXT NOT NULL DEFAULT '[]'
   );
   CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL,
@@ -83,6 +94,13 @@ export class SessionStore {
   private constructor(db: Database) {
     this.db = db;
     this.db.exec(SCHEMA);
+    // Databases written before the plan column existed still open.
+    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((column) => column.name === 'plan')) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN plan TEXT NOT NULL DEFAULT '[]'");
+    }
   }
 
   static open(file: string): SessionStore {
@@ -161,6 +179,28 @@ export class SessionStore {
       this.db.exec('ROLLBACK');
       throw err;
     }
+  }
+
+  /**
+   * The checklist as of the last change, so a resumed session still shows what
+   * the model planned. Rows written by other tools are ignored if unreadable.
+   */
+  plan(id: string): TaskItem[] {
+    const row = this.db.prepare('SELECT plan FROM sessions WHERE id = ?').get(id) as
+      | { plan: string }
+      | undefined;
+    if (!row) return [];
+    try {
+      const parsed: unknown = JSON.parse(row.plan);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(isTaskItem);
+    } catch {
+      return [];
+    }
+  }
+
+  savePlan(id: string, tasks: readonly TaskItem[]): void {
+    this.db.prepare('UPDATE sessions SET plan = ? WHERE id = ?').run(JSON.stringify(tasks), id);
   }
 
   addUsage(id: string, usage: AddUsageInput): void {

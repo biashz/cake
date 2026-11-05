@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises';
 import fg from 'fast-glob';
-import { loadConfig } from '../config/config.js';
+import { configPaths, loadConfig } from '../config/config.js';
+import { setPricingEntry } from '../config/write.js';
 import {
   buildSystemPrompt,
   estimateTextTokens,
@@ -8,10 +9,35 @@ import {
   type ProjectSection,
 } from '../core/context.js';
 import type { AgentEvent } from '../core/events.js';
+import {
+  BUILTIN_PRICING,
+  type Pricing,
+  type PricingOverrides,
+  resolvePricing,
+} from '../core/pricing.js';
 import { runDoctor as diagnose } from '../diagnostics/doctor.js';
-import { type McpBundle, openMcpServers } from '../mcp/client.js';
-import type { PermissionRules } from '../permissions/rules.js';
-import { loadSettings } from '../permissions/settings.js';
+import { type McpBundle, type McpServerStatus, openMcpServers } from '../mcp/client.js';
+import { mcpConfigPaths } from '../mcp/config.js';
+import {
+  removeMcpServer as dropServer,
+  type McpTarget,
+  setMcpEnabled as switchServer,
+  setMcpServer as writeServer,
+} from '../mcp/write.js';
+import {
+  globalSettingsPath,
+  loadSettingsLayers,
+  mergeSettings,
+  type RuleScope,
+  type SettingsLayer,
+  settingsPaths,
+} from '../permissions/settings.js';
+import type { RuleList, RuleTarget } from '../permissions/write.js';
+import {
+  addRule as appendRule,
+  removeRule as dropRule,
+  moveRule as shiftRule,
+} from '../permissions/write.js';
 import { createDefaultRegistry, type ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
 import type { Embedder } from '../rag/embedder.js';
@@ -22,21 +48,29 @@ import type {
   PermissionDecision,
   PermissionMode,
   PermissionRequest,
+  TaskItem,
   ToolContext,
 } from '../tools/types.js';
 import { VERSION } from '../version.js';
 import type {
   ContextEntryPayload,
   ContextPayload,
+  CostPayload,
   DoctorReportPayload,
   InitPayload,
+  McpDraft,
+  McpStatus,
   ModelHandle,
   PermissionModeName,
+  PricingRow,
   ProviderSummary,
+  RuleScopeName,
 } from './api.js';
 import { buildContextMap } from './context-map.js';
 import type { DesktopBackend } from './ipc.js';
 import { toWireEvent } from './ipc.js';
+import { mcpView } from './mcp-view.js';
+import { rulesView } from './rules-view.js';
 import { loadDesktopState, saveDesktopState } from './state.js';
 
 const IGNORED_GLOBS = ['.git/**', 'node_modules/**', '.cake/**', 'dist/**', 'release/**'];
@@ -59,7 +93,10 @@ interface ActiveWorkspace {
   /** System prompt without the project-instructions section; a Slice layer. */
   systemBase: string;
   projectSections: ProjectSection[];
-  rules: PermissionRules;
+  /** Layered settings for this workspace; the runtime lists are merged from these. */
+  settings: SettingsLayer[];
+  /** Rate-card additions from this workspace's config. */
+  pricing: PricingOverrides;
   mcp: McpBundle;
   embedder: Embedder | undefined;
   model: ModelSpec;
@@ -81,7 +118,11 @@ export class WorkspaceController implements DesktopBackend {
   private readonly send: (channel: string, payload: unknown) => void;
 
   private active: ActiveWorkspace | undefined;
-  private fallbackRules: PermissionRules = { allow: [], deny: [] };
+  /** Global settings, used for the panel until a workspace is open. */
+  private fallbackSettings: SettingsLayer[] = [];
+  /** The MCP panel's last state, and the rows it was built from. */
+  private mcpSnapshot: McpStatus = mcpView([], [], { global: null, project: null }, []);
+  private mcpRows: McpServerStatus[] = [];
   private recents: string[] = [];
   private busy = false;
   private currentAbort: AbortController | null = null;
@@ -101,7 +142,7 @@ export class WorkspaceController implements DesktopBackend {
 
   /** Reopen the last workspace when it still exists, then report the full state. */
   async init(): Promise<InitPayload> {
-    this.fallbackRules = (await loadSettings({ homeDir: this.homeDir })).permissions;
+    this.fallbackSettings = await loadSettingsLayers({ homeDir: this.homeDir });
     const state = await loadDesktopState(this.stateFile);
     this.recents = await this.existingDirs(state.recents ?? []);
     if (!this.active && state.lastWorkspace) {
@@ -119,7 +160,9 @@ export class WorkspaceController implements DesktopBackend {
     const previousMode = this.active?.mode;
     await this.closeActive();
 
-    const settings = await loadSettings({ cwd, homeDir: this.homeDir });
+    const settings = await loadSettingsLayers({ cwd, homeDir: this.homeDir });
+    // Config is re-read per workspace so a project can price its own models.
+    const workspaceConfig = loadConfig({ cwd, env: this.env, homeDir: this.homeDir });
     const projectSections = await loadProjectSections(cwd);
     const projectInstructions =
       projectSections.length > 0
@@ -149,7 +192,8 @@ export class WorkspaceController implements DesktopBackend {
         system,
         systemBase,
         projectSections,
-        rules: settings.permissions,
+        settings,
+        pricing: workspaceConfig.pricing,
         mcp,
         embedder: resolveEmbedder(this.registry),
         model,
@@ -165,7 +209,7 @@ export class WorkspaceController implements DesktopBackend {
     this.recents = [cwd, ...this.recents.filter((item) => item !== cwd)].slice(0, RECENT_LIMIT);
     await this.writeState(cwd);
     this.turnEntries = [];
-    this.sendMcpStatus();
+    this.setMcpBundle(mcp, false);
     return this.snapshot();
   }
 
@@ -187,7 +231,7 @@ export class WorkspaceController implements DesktopBackend {
     return active.store.list(active.cwd);
   }
 
-  newSession(): { session: SessionMeta; messages: [] } {
+  newSession(): { session: SessionMeta; messages: []; plan: [] } {
     const active = this.requireActive();
     const session = active.store.create({
       cwd: active.cwd,
@@ -195,18 +239,23 @@ export class WorkspaceController implements DesktopBackend {
       model: active.model.modelId,
     });
     active.session = session;
-    return { session, messages: [] };
+    return { session, messages: [], plan: [] };
   }
 
   openSession(id: string): {
     session: SessionMeta;
     messages: ReturnType<SessionStore['messages']>;
+    plan: TaskItem[];
   } {
     const active = this.requireActive();
     const found = active.store.get(id);
     if (!found) throw new Error(`Unknown session "${id}"`);
     this.activateSession(found);
-    return { session: active.session, messages: active.store.messages(id) };
+    return {
+      session: active.session,
+      messages: active.store.messages(id),
+      plan: active.store.plan(id),
+    };
   }
 
   renameSession(id: string, title: string): SessionMeta[] {
@@ -217,9 +266,11 @@ export class WorkspaceController implements DesktopBackend {
     return active.store.list(active.cwd);
   }
 
-  deleteSession(
-    id: string,
-  ): { session: SessionMeta; messages: ReturnType<SessionStore['messages']> } | null {
+  deleteSession(id: string): {
+    session: SessionMeta;
+    messages: ReturnType<SessionStore['messages']>;
+    plan: TaskItem[];
+  } | null {
     const active = this.requireActive();
     const found = active.store.get(id);
     if (!found) throw new Error(`Unknown session "${id}"`);
@@ -234,7 +285,11 @@ export class WorkspaceController implements DesktopBackend {
         model: active.model.modelId,
       });
     this.activateSession(next);
-    return { session: active.session, messages: active.store.messages(active.session.id) };
+    return {
+      session: active.session,
+      messages: active.store.messages(active.session.id),
+      plan: active.store.plan(active.session.id),
+    };
   }
 
   async run(sessionId: string, prompt: string) {
@@ -248,6 +303,8 @@ export class WorkspaceController implements DesktopBackend {
     this.turnEntries = [];
     this.addTurnEntry('Prompt', estimateTextTokens(prompt));
     const emit = (event: AgentEvent) => {
+      // Persist as it happens: a turn that is stopped mid-way keeps its plan.
+      if (event.type === 'plan') active.store.savePlan(sessionId, event.tasks);
       this.trackTurnEvent(event);
       this.send('agent:event', toWireEvent(event));
     };
@@ -258,7 +315,8 @@ export class WorkspaceController implements DesktopBackend {
         model: active.model,
         systemBase: active.system,
         mode: active.mode,
-        rules: active.rules,
+        rules: mergeSettings(active.settings),
+        pricing: active.pricing,
         abortSignal: controller.signal,
         onEvent: emit,
       });
@@ -269,11 +327,12 @@ export class WorkspaceController implements DesktopBackend {
         model: active.model,
         system: active.system,
         mode: active.mode,
-        rules: active.rules,
+        rules: mergeSettings(active.settings),
         tools,
         history: active.store.messages(sessionId),
         prompt,
         maxContext: provider.capabilities(active.model.modelId).maxContext,
+        pricing: active.pricing,
         embedder: active.embedder,
         ctx: this.toolContext(active),
         abortSignal: controller.signal,
@@ -339,12 +398,53 @@ export class WorkspaceController implements DesktopBackend {
     return Promise.resolve(this.snapshot());
   }
 
-  async reloadMcp(): Promise<InitPayload> {
+  /** Persist a rate for this workspace and re-read the config it lives in. */
+  async setPricing(pattern: string, rates: Pricing | null): Promise<InitPayload> {
     const active = this.requireActive();
-    if (this.busy) throw new Error('Cannot reload MCP while a turn is running');
-    await active.mcp.close();
-    active.mcp = await openMcpServers({ cwd: active.cwd });
-    this.sendMcpStatus();
+    const key = pattern.trim();
+    if (!key) throw new Error('Rate pattern cannot be empty');
+    await setPricingEntry(active.cwd, key, rates);
+    active.pricing = loadConfig({ cwd: active.cwd, env: this.env, homeDir: this.homeDir }).pricing;
+    return this.snapshot();
+  }
+
+  /**
+   * Add, drop, or reorder a rule, then re-read the files so the next turn runs
+   * with what the panel just showed.
+   */
+  async addRule(list: RuleList, scope: RuleScope, rule: string): Promise<InitPayload> {
+    await appendRule(this.ruleTarget(list, scope), rule);
+    return this.reloadSettings();
+  }
+
+  async removeRule(list: RuleList, scope: RuleScope, rule: string): Promise<InitPayload> {
+    await dropRule(this.ruleTarget(list, scope), rule);
+    return this.reloadSettings();
+  }
+
+  async moveRule(
+    list: RuleList,
+    scope: RuleScope,
+    rule: string,
+    delta: number,
+  ): Promise<InitPayload> {
+    await shiftRule(this.ruleTarget(list, scope), rule, delta);
+    return this.reloadSettings();
+  }
+
+  private ruleTarget(list: RuleList, scope: RuleScope): RuleTarget {
+    const active = this.requireActive();
+    return { cwd: active.cwd, homeDir: this.homeDir, scope, list };
+  }
+
+  private async reloadSettings(): Promise<InitPayload> {
+    const active = this.active;
+    const layers = await loadSettingsLayers({
+      cwd: active?.cwd ?? process.cwd(),
+      homeDir: this.homeDir,
+    });
+    if (active) active.settings = layers;
+    else this.fallbackSettings = layers;
     return this.snapshot();
   }
 
@@ -384,16 +484,49 @@ export class WorkspaceController implements DesktopBackend {
         ? this.config.model
         : provider.defaultModelId;
     const providers = this.providerSummaries();
+    const model: ModelHandle = active?.model ?? { provider: providerId, modelId: fallbackModelId };
     return {
       version: VERSION,
       workspace: active ? { cwd: active.cwd, sessionId: active.session.id } : null,
       recents: this.recents,
       providers,
-      model: active?.model ?? { provider: providerId, modelId: fallbackModelId },
+      model,
       mode: active?.mode ?? 'default',
-      rules: active?.rules ?? this.fallbackRules,
+      rules: rulesView(active?.settings ?? this.fallbackSettings, {
+        global: globalSettingsPath(this.homeDir),
+        project: active ? settingsPaths(active.cwd, this.homeDir).project : null,
+      }),
       mcpStatus: this.mcpStatus(),
       missingKeys: providers.filter((item) => !item.hasKey).map((item) => item.id),
+      cost: this.costSnapshot(model, active?.pricing ?? {}, active?.cwd),
+      plan: active ? active.store.plan(active.session.id) : [],
+    };
+  }
+
+  /**
+   * The rate card as the Inspector shows it: what answers for the open model,
+   * which config rows override it, and the built-in card behind them.
+   */
+  private costSnapshot(
+    model: ModelHandle,
+    overrides: PricingOverrides,
+    cwd: string | undefined,
+  ): CostPayload {
+    const match = resolvePricing(model, overrides);
+    const row = (pattern: string, pricing: Pricing): PricingRow => ({
+      pattern,
+      inputPer1M: pricing.inputPer1M,
+      outputPer1M: pricing.outputPer1M,
+    });
+    return {
+      model,
+      effective: match ? row(match.pattern, match.pricing) : null,
+      source: match?.source ?? null,
+      overrides: Object.entries(overrides)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([pattern, pricing]) => row(pattern, pricing)),
+      builtin: BUILTIN_PRICING.map((entry) => row(entry.pattern, entry.pricing)),
+      configFile: cwd ? configPaths(cwd).project : null,
     };
   }
 
@@ -407,23 +540,72 @@ export class WorkspaceController implements DesktopBackend {
     }));
   }
 
-  private mcpStatus() {
-    const active = this.active;
-    if (!active) return { servers: [], tools: 0, warnings: [] };
-    return {
-      servers: active.mcp.servers,
-      tools: active.mcp.tools.length,
-      warnings: active.mcp.warnings,
-    };
+  private mcpStatus(): McpStatus {
+    return { ...this.mcpSnapshot, files: this.mcpFiles() };
   }
 
-  private sendMcpStatus(): void {
+  /** The two files servers can be declared in; the workspace one needs an open workspace. */
+  private mcpFiles(): Record<RuleScopeName, string | null> {
+    const paths = mcpConfigPaths(this.active?.cwd ?? process.cwd(), this.homeDir);
+    return { global: paths.global, project: this.active ? paths.project : null };
+  }
+
+  /**
+   * Publish a fresh connect. `report` is false when the change came from opening
+   * a workspace, so a switch does not read as a set of servers being added.
+   */
+  private setMcpBundle(bundle: McpBundle | undefined, report: boolean): void {
+    const rows = bundle?.status ?? [];
+    this.mcpSnapshot = mcpView(
+      rows,
+      bundle?.warnings ?? [],
+      this.mcpFiles(),
+      report ? this.mcpRows : rows,
+    );
+    this.mcpRows = rows;
     this.send('mcp:status', this.mcpStatus());
+  }
+
+  private mcpTarget(scope: RuleScopeName): McpTarget {
+    const active = this.requireActive();
+    if (this.busy) throw new Error('Cannot change MCP servers while a turn is running');
+    return { cwd: active.cwd, homeDir: this.homeDir, scope };
+  }
+
+  /** Reconnect, then tell the panel what the connect changed. */
+  async reloadMcp(): Promise<InitPayload> {
+    const active = this.requireActive();
+    if (this.busy) throw new Error('Cannot reload MCP while a turn is running');
+    await active.mcp.close();
+    active.mcp = await openMcpServers({ cwd: active.cwd });
+    this.setMcpBundle(active.mcp, true);
+    return this.snapshot();
+  }
+
+  /**
+   * Write one server entry and reconnect, so the panel shows the live result of
+   * what was just saved rather than a promise about it.
+   */
+  async setMcpServer(scope: RuleScopeName, draft: McpDraft): Promise<InitPayload> {
+    await writeServer(this.mcpTarget(scope), draft);
+    return this.reloadMcp();
+  }
+
+  async removeMcpServer(scope: RuleScopeName, name: string): Promise<InitPayload> {
+    await dropServer(this.mcpTarget(scope), name);
+    return this.reloadMcp();
+  }
+
+  async setMcpEnabled(scope: RuleScopeName, name: string, enabled: boolean): Promise<InitPayload> {
+    await switchServer(this.mcpTarget(scope), name, enabled);
+    return this.reloadMcp();
   }
 
   private toolContext(active: ActiveWorkspace): ToolContext {
     return {
       cwd: active.cwd,
+      // Resume where the session left off instead of starting an empty list.
+      tasks: active.store.plan(active.session.id),
       askPermission: (request) => this.askPermission(request),
       log: () => {},
     };
@@ -542,5 +724,6 @@ export class WorkspaceController implements DesktopBackend {
     if (!active) return;
     await active.mcp.close();
     active.store.close();
+    this.setMcpBundle(undefined, false);
   }
 }

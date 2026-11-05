@@ -111,7 +111,7 @@ describe('end-to-end fix-bug loop', () => {
     const registry = new ProviderRegistry().register(provider, 'test-key');
 
     const events: AgentEvent[] = [];
-    const ctx: ToolContext = { cwd, askPermission: async () => 'allow', log: () => {} };
+    const ctx: ToolContext = { cwd, tasks: [], askPermission: async () => 'allow', log: () => {} };
     const result = await runAgent(
       {
         model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },

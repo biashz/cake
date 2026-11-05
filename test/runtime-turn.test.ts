@@ -9,6 +9,7 @@ import type { AgentEvent, TokenUsage } from '../src/core/events.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import type { ModelProvider } from '../src/providers/types.js';
 import { runTurn, type TurnNote } from '../src/runtime/turn.js';
+import { taskTool } from '../src/tools/task.js';
 import type { CakeTool, ToolContext } from '../src/tools/types.js';
 
 const MODEL = { provider: 'anthropic', modelId: 'claude-sonnet-4-5' } as const;
@@ -95,6 +96,7 @@ function context(): {
   const forwarded: Array<{ usage: TokenUsage; costUsd: number }> = [];
   const ctx: ToolContext = {
     cwd,
+    tasks: [],
     askPermission: async () => 'allow',
     log: () => {},
     onUsage: (usage, costUsd) => forwarded.push({ usage, costUsd }),
@@ -142,6 +144,40 @@ describe('runTurn', () => {
     expect(events.some((event) => event.type === 'tool-call' && event.toolName === 'metered')).toBe(
       true,
     );
+  });
+
+  it('surfaces task tool changes as plan events', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        toolCallStream('task', { action: 'add', subject: 'read code' }),
+        toolCallStream('task', { action: 'update', id: 1, status: 'in_progress' }),
+        textStream('working'),
+      ],
+    });
+    const events: AgentEvent[] = [];
+    const { ctx } = context();
+
+    await runTurn({
+      cwd,
+      registry: registryFor(model),
+      model: MODEL,
+      system: 'sys',
+      mode: 'yolo',
+      rules: { allow: [], deny: [] },
+      tools: [taskTool],
+      history: [],
+      prompt: 'plan it',
+      maxContext: 200_000,
+      ctx,
+      abortSignal: new AbortController().signal,
+      onEvent: (event) => events.push(event),
+    });
+
+    const plans = events.filter((event) => event.type === 'plan');
+    expect(plans.map((event) => (event.type === 'plan' ? event.tasks : []))).toEqual([
+      [{ id: 1, subject: 'read code', status: 'pending' }],
+      [{ id: 1, subject: 'read code', status: 'in_progress' }],
+    ]);
   });
 
   it('expands @file mentions before sending the prompt', async () => {
