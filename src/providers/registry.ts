@@ -1,6 +1,7 @@
 import type { EmbeddingModel, LanguageModel } from 'ai';
 import type { CakeConfig } from '../config/config.js';
 import { createAnthropicProvider } from './anthropic.js';
+import { createDeepSeekProvider } from './deepseek.js';
 import { resolveApiKey } from './keys.js';
 import { createOpenAIProvider } from './openai.js';
 import type { ModelProvider, ModelSpec, ProviderId } from './types.js';
@@ -52,15 +53,29 @@ export class ProviderRegistry {
 }
 
 /**
- * Build the default registry (Anthropic + OpenAI) from resolved config. API keys are
- * resolved through {@link resolveApiKey} (explicit > env > config file) and stored so
- * the CLI can fail fast with an actionable message when a key is missing.
+ * Build the default registry (DeepSeek + Anthropic + OpenAI) from resolved config.
+ * API keys are resolved through {@link resolveApiKey} (explicit > env > config file)
+ * and stored so the CLI can fail fast with an actionable message when a key is missing.
+ * Registration order sets the fallback preference: DeepSeek first because it is the default.
  */
 export function createDefaultRegistry(
   config: CakeConfig,
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
 ): ProviderRegistry {
   const registry = new ProviderRegistry();
+
+  const deepseekKey = resolveApiKey('deepseek', 'DEEPSEEK_API_KEY', {
+    env,
+    config: { deepseek: config.providers.deepseek?.apiKey },
+  });
+  registry.register(
+    createDeepSeekProvider({
+      apiKey: deepseekKey,
+      baseURL: config.providers.deepseek?.baseURL,
+      defaultModelId: config.providers.deepseek?.model,
+    }),
+    deepseekKey,
+  );
 
   const anthropicKey = resolveApiKey('anthropic', 'ANTHROPIC_API_KEY', {
     env,

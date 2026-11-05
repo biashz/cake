@@ -68,14 +68,23 @@ const languageCache = new Map<string, Promise<Language>>();
 const parserCache = new Map<string, Promise<Parser>>();
 
 function wasmDirectory(): string {
+  const override = process.env.CAKE_WASM_DIR;
+  if (override) return override;
   const pkg = createRequire(import.meta.url).resolve('@vscode/tree-sitter-wasm/package.json');
   return path.join(path.dirname(pkg), 'wasm');
+}
+
+function initParser(): Promise<void> {
+  const override = process.env.CAKE_WASM_DIR;
+  return Parser.init(
+    override ? { locateFile: (name: string) => path.join(override, name) } : undefined,
+  );
 }
 
 function loadLanguage(name: string): Promise<Language> {
   const cached = languageCache.get(name);
   if (cached) return cached;
-  initPromise ??= Parser.init();
+  initPromise ??= initParser();
   const loaded = initPromise.then(() =>
     Language.load(path.join(wasmDirectory(), `tree-sitter-${name}.wasm`)),
   );

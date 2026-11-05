@@ -1,0 +1,30 @@
+appId: dev.cake.desktop
+productName: Cake
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - package.json
+  - "!dist/sea/**"
+  - "!**/*.map"
+asar: true
+asarUnpack:
+  - node_modules/@vscode/tree-sitter-wasm/**
+  - node_modules/web-tree-sitter/**
+npmRebuild: false
+win:
+  icon: build/icon.png
+  executableName: Cake
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: cake-${version}-setup.${ext}
+portable:
+  artifactName: cake-${version}-portable.${ext}

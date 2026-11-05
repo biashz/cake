@@ -14,11 +14,11 @@ function writeConfig(dir: string, config: unknown): void {
 }
 
 describe('loadConfig', () => {
-  it('defaults to anthropic when nothing is configured', () => {
+  it('defaults to deepseek when nothing is configured', () => {
     const home = makeTmp('cake-home-');
     const cwd = makeTmp('cake-cwd-');
     const cfg = loadConfig({ cwd, homeDir: home, env: {} });
-    expect(cfg.provider).toBe('anthropic');
+    expect(cfg.provider).toBe('deepseek');
     expect(cfg.model).toBeUndefined();
   });
 
@@ -53,9 +53,23 @@ describe('loadConfig', () => {
     const cfg = loadConfig({
       cwd,
       homeDir: home,
-      env: { ANTHROPIC_BASE_URL: 'http://localhost:8080' },
+      env: {
+        DEEPSEEK_BASE_URL: 'http://localhost:8081',
+        ANTHROPIC_BASE_URL: 'http://localhost:8080',
+      },
     });
+    expect(cfg.providers.deepseek?.baseURL).toBe('http://localhost:8081');
     expect(cfg.providers.anthropic?.baseURL).toBe('http://localhost:8080');
+  });
+
+  it('merges deepseek provider settings across global and project config', () => {
+    const home = makeTmp('cake-home-');
+    const cwd = makeTmp('cake-cwd-');
+    writeConfig(home, { providers: { deepseek: { apiKey: 'global', model: 'deepseek-chat' } } });
+    writeConfig(cwd, { providers: { deepseek: { model: 'deepseek-reasoner' } } });
+
+    const cfg = loadConfig({ cwd, homeDir: home, env: {} });
+    expect(cfg.providers.deepseek).toEqual({ apiKey: 'global', model: 'deepseek-reasoner' });
   });
 
   it('throws a helpful error on invalid JSON', () => {

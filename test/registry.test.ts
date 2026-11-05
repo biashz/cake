@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createAnthropicProvider } from '../src/providers/anthropic.js';
+import { createDeepSeekProvider } from '../src/providers/deepseek.js';
 import { createDefaultRegistry, ProviderRegistry } from '../src/providers/registry.js';
 
 describe('ProviderRegistry', () => {
@@ -22,16 +23,43 @@ describe('ProviderRegistry', () => {
   });
 });
 
+describe('createDeepSeekProvider', () => {
+  it('defaults to deepseek-chat with tool calling and no vision', () => {
+    const provider = createDeepSeekProvider({ apiKey: 'x' });
+    expect(provider.id).toBe('deepseek');
+    expect(provider.apiKeyEnvVar).toBe('DEEPSEEK_API_KEY');
+    expect(provider.defaultModelId).toBe('deepseek-chat');
+    expect(provider.capabilities('deepseek-chat')).toEqual({
+      toolCalling: true,
+      vision: false,
+      maxContext: 128_000,
+    });
+  });
+
+  it('disables tool calling for the reasoner model', () => {
+    const provider = createDeepSeekProvider({ apiKey: 'x' });
+    expect(provider.capabilities('deepseek-reasoner').toolCalling).toBe(false);
+  });
+
+  it('resolves a language model without network', () => {
+    const provider = createDeepSeekProvider({ apiKey: 'x' });
+    expect(provider.languageModel('deepseek-chat')).toBeDefined();
+  });
+});
+
 describe('createDefaultRegistry', () => {
-  it('registers anthropic + openai and resolves keys from env', () => {
+  it('registers deepseek + anthropic + openai and resolves keys from env', () => {
     const registry = createDefaultRegistry(
-      { provider: 'anthropic', providers: {} },
-      { ANTHROPIC_API_KEY: 'a-key' },
+      { provider: 'deepseek', providers: {} },
+      { DEEPSEEK_API_KEY: 'd-key', ANTHROPIC_API_KEY: 'a-key' },
     );
+    expect(registry.has('deepseek')).toBe(true);
     expect(registry.has('anthropic')).toBe(true);
     expect(registry.has('openai')).toBe(true);
+    expect(registry.getApiKey('deepseek')).toBe('d-key');
     expect(registry.getApiKey('anthropic')).toBe('a-key');
     expect(registry.getApiKey('openai')).toBeUndefined();
+    expect(registry.list()[0]?.id).toBe('deepseek');
   });
 
   it('prefers config-file api key over nothing, and env over config', () => {

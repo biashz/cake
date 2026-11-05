@@ -13,7 +13,7 @@ async function writeConfig(base: string, value: unknown): Promise<void> {
 }
 
 /** Builds a ${NAME} placeholder, kept out of string literals to satisfy the linter. */
-const ref = (name: string) => '$' + '{' + name + '}';
+const ref = (name: string) => `\${${name}}`;
 
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), 'cake-mcp-home-'));

@@ -1,21 +1,16 @@
 import type { ModelMessage } from 'ai';
 import { Box, Text, useApp, useInput } from 'ink';
 import { useEffect, useRef, useState } from 'react';
-import { runAgent } from '../core/agent.js';
-import { createHistorySummarizer, maybeCompress } from '../core/context.js';
-import { addUsage, formatCost } from '../core/cost.js';
-import type { AgentEvent, TokenUsage } from '../core/events.js';
-import { expandFileReferences } from '../core/mentions.js';
+import { formatCost } from '../core/cost.js';
+import type { AgentEvent } from '../core/events.js';
 import { createTrace } from '../observability/trace.js';
-import { createAgentTool } from '../orchestration/tool.js';
 import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
-import { expandCodebaseMention } from '../rag/codebase-mention.js';
 import type { Embedder } from '../rag/embedder.js';
-import { createRagTools } from '../rag/tools.js';
+import { buildToolCatalog } from '../runtime/toolset.js';
+import { runTurn } from '../runtime/turn.js';
 import type { SessionMeta, SessionStore } from '../session/store.js';
-import { buildToolSet, createDefaultTools } from '../tools/registry.js';
 import type {
   CakeTool,
   PermissionDecision,
@@ -175,50 +170,6 @@ export function App(props: AppProps) {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    let pending: ModelMessage[] = [...historyRef.current, { role: 'user', content: typed }];
-    try {
-      const cwd = process.cwd();
-      const codebase = await expandCodebaseMention(typed, {
-        cwd,
-        embedder,
-        abortSignal: controller.signal,
-      });
-      if (codebase.results > 0) {
-        addEntry({ role: 'info', text: `codebase: attached ${codebase.results} chunks` });
-      }
-      if (codebase.note) {
-        addEntry({ role: 'info', text: `codebase: ${codebase.note}` });
-      }
-      const expanded = await expandFileReferences(codebase.text, cwd);
-      if (expanded.files.length > 0) {
-        addEntry({ role: 'info', text: `attached ${expanded.files.join(', ')}` });
-      }
-      if (expanded.missing.length > 0) {
-        addEntry({ role: 'info', text: `not found: ${expanded.missing.join(', ')}` });
-      }
-      pending = [...historyRef.current, { role: 'user', content: expanded.text }];
-      const compressed = await maybeCompress(pending, {
-        maxTokens: maxContext,
-        summarize: createHistorySummarizer(registry, model, controller.signal),
-      });
-      pending = compressed.messages;
-      if (compressed.compressed) {
-        addEntry({ role: 'info', text: 'context compressed: older history summarized' });
-      }
-    } catch (err) {
-      if (!controller.signal.aborted) {
-        addEntry({ role: 'info', text: `context preparation skipped: ${(err as Error).message}` });
-      }
-    }
-
-    if (controller.signal.aborted) {
-      addEntry({ role: 'info', text: '(cancelled)' });
-      setStreaming('');
-      setBusy(false);
-      abortRef.current = null;
-      return;
-    }
-
     let acc = '';
     let sawToolCall = false;
     const flushText = () => {
@@ -281,64 +232,47 @@ export function App(props: AppProps) {
       }
     }
 
-    const nestedUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-    let nestedCostUsd = 0;
-    const ctx: ToolContext = {
-      cwd: process.cwd(),
-      askPermission,
-      log: () => {},
-      onUsage: (usage, costUsd) => {
-        const total = addUsage(nestedUsage, usage);
-        nestedUsage.inputTokens = total.inputTokens;
-        nestedUsage.outputTokens = total.outputTokens;
-        nestedUsage.totalTokens = total.totalTokens;
-        nestedCostUsd += costUsd;
-      },
-    };
-    const defaultTools = [
-      ...(embedder ? [...createDefaultTools(), ...createRagTools(embedder)] : createDefaultTools()),
-      ...mcpTools,
-    ];
-    const tools = [
-      ...defaultTools,
-      createAgentTool({
-        registry,
-        model,
-        systemBase: system,
-        tools: defaultTools,
-        mode: permissionMode,
-        rules,
-        abortSignal: controller.signal,
-        onEvent: handleEvent,
-      }),
-    ];
-    const toolSet = buildToolSet(tools, ctx, permissionMode, rules);
+    const cwd = process.cwd();
+    const ctx: ToolContext = { cwd, askPermission, log: () => {} };
+    const tools = buildToolCatalog(embedder, mcpTools, {
+      registry,
+      model,
+      systemBase: system,
+      mode: permissionMode,
+      rules,
+      abortSignal: controller.signal,
+      onEvent: handleEvent,
+    });
 
     try {
-      const result = await runAgent(
-        {
-          model,
-          system,
-          tools: toolSet,
-          messages: pending,
-          abortSignal: controller.signal,
-          onEvent: handleEvent,
-        },
+      const result = await runTurn({
+        cwd,
         registry,
-      );
+        model,
+        system,
+        mode: permissionMode,
+        rules,
+        tools,
+        history: historyRef.current,
+        prompt: typed,
+        maxContext,
+        embedder,
+        ctx,
+        abortSignal: controller.signal,
+        onEvent: handleEvent,
+        onNote: (note) => addEntry({ role: 'info', text: `${note.kind}: ${note.text}` }),
+      });
 
-      const totalUsage = addUsage(result.usage, nestedUsage);
-      const totalCost = result.costUsd + nestedCostUsd;
       historyRef.current = result.messages;
       store.setTitleIfEmpty(session.id, typed);
       store.saveMessages(session.id, result.messages);
       store.addUsage(session.id, {
-        totalTokens: totalUsage.totalTokens,
-        costUsd: totalCost,
+        totalTokens: result.usage.totalTokens,
+        costUsd: result.costUsd,
       });
       const updated = store.get(session.id);
       if (updated) setSession(updated);
-      const meta = `${totalUsage.totalTokens} tokens · ${formatCost(totalCost)}`;
+      const meta = `${result.usage.totalTokens} tokens · ${formatCost(result.costUsd)}`;
       if (acc.trim()) {
         setStreaming('');
         addEntry({ role: 'assistant', text: acc, meta });

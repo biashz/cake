@@ -27,6 +27,11 @@ const PRICING_RULES: ReadonlyArray<{ match: (spec: ModelSpec) => boolean; pricin
     pricing: { inputPer1M: 3, outputPer1M: 15 },
   },
   {
+    // Cache-miss list prices; cached input is cheaper.
+    match: (s) => s.provider === 'deepseek',
+    pricing: { inputPer1M: 0.28, outputPer1M: 0.42 },
+  },
+  {
     match: (s) => s.provider === 'openai' && s.modelId.includes('mini'),
     pricing: { inputPer1M: 0.15, outputPer1M: 0.6 },
   },

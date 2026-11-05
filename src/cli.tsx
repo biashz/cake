@@ -3,35 +3,28 @@ import type { ModelMessage } from 'ai';
 import { render } from 'ink';
 import { App } from './cli/App.js';
 import { loadConfig } from './config/config.js';
-import { runAgent } from './core/agent.js';
-import {
-  buildSystemPrompt,
-  createHistorySummarizer,
-  loadProjectInstructions,
-  maybeCompress,
-} from './core/context.js';
-import { addUsage, formatCost } from './core/cost.js';
-import type { AgentEvent, TokenUsage } from './core/events.js';
-import { expandFileReferences } from './core/mentions.js';
+import { buildSystemPrompt, loadProjectInstructions } from './core/context.js';
+import { formatCost } from './core/cost.js';
+import type { AgentEvent } from './core/events.js';
 import { formatDoctor, runDoctor } from './diagnostics/doctor.js';
 import { openMcpServers } from './mcp/client.js';
 import { createTrace } from './observability/trace.js';
-import { createAgentTool } from './orchestration/tool.js';
 import type { PermissionRules } from './permissions/rules.js';
 import { loadSettings } from './permissions/settings.js';
 import { createDefaultRegistry, type ProviderRegistry } from './providers/registry.js';
 import type { ModelSpec } from './providers/types.js';
-import { expandCodebaseMention } from './rag/codebase-mention.js';
-import { createEmbedder, DEFAULT_EMBEDDING_MODEL, type Embedder } from './rag/embedder.js';
-import { createRagTools } from './rag/tools.js';
+import type { Embedder } from './rag/embedder.js';
+import { buildToolCatalog, resolveEmbedder } from './runtime/toolset.js';
+import { runTurn } from './runtime/turn.js';
+import { prepareSeaAssets } from './sea.js';
 import { defaultSessionFile, type SessionMeta, SessionStore } from './session/store.js';
-import { buildToolSet, createDefaultTools } from './tools/registry.js';
 import type { CakeTool, PermissionMode, ToolContext } from './tools/types.js';
 import { VERSION } from './version.js';
 
 const PERMISSION_MODES: PermissionMode[] = ['plan', 'default', 'acceptEdits', 'yolo'];
 
 async function main(): Promise<void> {
+  await prepareSeaAssets();
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
@@ -192,17 +185,6 @@ function resolvePermissionMode(value: string | undefined, yes: boolean): Permiss
   return value as PermissionMode;
 }
 
-/** Embeddings come from OpenAI; semantic tools stay off when that key is absent. */
-function resolveEmbedder(registry: ProviderRegistry): Embedder | undefined {
-  if (!registry.getApiKey('openai')) return undefined;
-  const model = registry.resolveEmbeddingModel(DEFAULT_EMBEDDING_MODEL);
-  return model ? createEmbedder(model) : undefined;
-}
-
-function withRagTools(embedder: Embedder | undefined) {
-  return embedder ? [...createDefaultTools(), ...createRagTools(embedder)] : createDefaultTools();
-}
-
 interface HeadlessOptions {
   registry: ProviderRegistry;
   model: ModelSpec;
@@ -240,9 +222,6 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
   const trace = createTrace(cwd);
   if (trace) process.stderr.write(`[trace] ${trace.file}\n`);
 
-  const nestedUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-  let nestedCostUsd = 0;
-
   const ctx: ToolContext = {
     cwd,
     askPermission: async (request) => {
@@ -253,13 +232,6 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
       return 'deny';
     },
     log: () => {},
-    onUsage: (usage, costUsd) => {
-      const total = addUsage(nestedUsage, usage);
-      nestedUsage.inputTokens = total.inputTokens;
-      nestedUsage.outputTokens = total.outputTokens;
-      nestedUsage.totalTokens = total.totalTokens;
-      nestedCostUsd += costUsd;
-    },
   };
 
   const handleEvent = (event: AgentEvent) => {
@@ -286,78 +258,42 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
   };
 
   try {
-    const codebase = await expandCodebaseMention(prompt, {
-      cwd,
-      embedder,
-      abortSignal: controller.signal,
-      onProgress: (message) => process.stderr.write(`[index] ${message}\n`),
-    });
-    if (codebase.results > 0) {
-      process.stderr.write(`[codebase] attached ${codebase.results} chunks\n`);
-    }
-    if (codebase.note) process.stderr.write(`[codebase] ${codebase.note}\n`);
-
-    const expanded = await expandFileReferences(codebase.text, cwd);
-    if (expanded.files.length > 0) {
-      process.stderr.write(`[files] attached ${expanded.files.join(', ')}\n`);
-    }
-    if (expanded.missing.length > 0) {
-      process.stderr.write(
-        `[files] not found or outside workspace: ${expanded.missing.join(', ')}\n`,
-      );
-    }
-
-    let messages: ModelMessage[] = [...history, { role: 'user', content: expanded.text }];
-    try {
-      const compressed = await maybeCompress(messages, {
-        maxTokens: maxContext,
-        summarize: createHistorySummarizer(registry, model, controller.signal),
-      });
-      if (compressed.compressed) {
-        process.stderr.write('[context] older history compressed\n');
-      }
-      messages = compressed.messages;
-    } catch (err) {
-      process.stderr.write(`[context] compression skipped: ${(err as Error).message}\n`);
-    }
-
-    const baseTools = [...withRagTools(embedder), ...mcpTools];
-    const tools = [
-      ...baseTools,
-      createAgentTool({
-        registry,
-        model,
-        systemBase: system,
-        tools: baseTools,
-        mode,
-        rules,
-        abortSignal: controller.signal,
-        onEvent: handleEvent,
-      }),
-    ];
-
-    const result = await runAgent(
-      {
-        model,
-        system,
-        tools: buildToolSet(tools, ctx, mode, rules),
-        messages,
-        abortSignal: controller.signal,
-        onEvent: handleEvent,
-      },
+    const tools = buildToolCatalog(embedder, mcpTools, {
       registry,
-    );
+      model,
+      systemBase: system,
+      mode,
+      rules,
+      abortSignal: controller.signal,
+      onEvent: handleEvent,
+    });
+
+    const result = await runTurn({
+      cwd,
+      registry,
+      model,
+      system,
+      mode,
+      rules,
+      tools,
+      history,
+      prompt,
+      maxContext,
+      embedder,
+      ctx,
+      abortSignal: controller.signal,
+      onEvent: handleEvent,
+      onNote: (note) => process.stderr.write(`[${note.kind}] ${note.text}\n`),
+    });
     process.stdout.write('\n');
-    const totalUsage = addUsage(result.usage, nestedUsage);
-    const totalCost = result.costUsd + nestedCostUsd;
     process.stderr.write(
-      `[tokens] in=${totalUsage.inputTokens} out=${totalUsage.outputTokens} cost=${formatCost(totalCost)}\n`,
+      `[tokens] in=${result.usage.inputTokens} out=${result.usage.outputTokens} cost=${formatCost(result.costUsd)}\n`,
     );
     store.setTitleIfEmpty(session.id, prompt);
     store.saveMessages(session.id, result.messages);
     store.addUsage(session.id, {
-      totalTokens: totalUsage.totalTokens,
-      costUsd: totalCost,
+      totalTokens: result.usage.totalTokens,
+      costUsd: result.costUsd,
     });
     process.stderr.write(`[session] ${session.id}\n`);
   } catch (err) {
@@ -394,7 +330,7 @@ function printHelp(): void {
       '  -p, --print               Headless: stream the reply and exit',
       '  -y, --yes                 Auto-approve every tool call (yolo mode)',
       '      --permission-mode <m> plan | default | acceptEdits | yolo',
-      '      --provider <id>       Provider: anthropic | openai',
+      '      --provider <id>       Provider: deepseek | anthropic | openai',
       '  -m, --model <id>          Model id (overrides config/default)',
       '  -c, --continue            Resume the most recent session in this workspace',
       '      --resume <id>         Resume a session by id',
@@ -422,8 +358,8 @@ function printHelp(): void {
       '  yolo          Everything runs without asking',
       '',
       'Environment:',
-      '  ANTHROPIC_API_KEY | OPENAI_API_KEY   API keys',
-      '  CAKE_PROVIDER, CAKE_MODEL            Defaults',
+      '  DEEPSEEK_API_KEY | ANTHROPIC_API_KEY | OPENAI_API_KEY   API keys',
+      '  CAKE_PROVIDER, CAKE_MODEL            Defaults (provider defaults to deepseek)',
       '',
       'Rules:',
       '  .cake/settings.json  { "permissions": { "allow": ["bash(npm test*)"], "deny": [...] } }',

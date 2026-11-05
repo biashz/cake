@@ -76,6 +76,20 @@ describe('SessionStore', () => {
     store.close();
   });
 
+  it('renames and deletes sessions with their messages', () => {
+    const store = SessionStore.inMemory();
+    const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    store.saveMessages(meta.id, [{ role: 'user', content: 'hi' }]);
+
+    store.rename(meta.id, '  parser tests  ');
+    expect(store.get(meta.id)?.title).toBe('parser tests');
+
+    store.delete(meta.id);
+    expect(store.get(meta.id)).toBeUndefined();
+    expect(store.messages(meta.id)).toEqual([]);
+    store.close();
+  });
+
   it('persists messages and metadata across reopen', async () => {
     const file = defaultSessionFile(dir);
     const store = SessionStore.open(file);

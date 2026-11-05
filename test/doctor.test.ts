@@ -33,10 +33,11 @@ describe('runDoctor', () => {
     const report = await runDoctor({
       cwd,
       homeDir: home,
-      env: { ANTHROPIC_API_KEY: 'a', OPENAI_API_KEY: 'b' },
+      env: { DEEPSEEK_API_KEY: 'd', ANTHROPIC_API_KEY: 'a', OPENAI_API_KEY: 'b' },
     });
 
     expect(report.ok).toBe(true);
+    expect(find(report, 'deepseek API key')?.status).toBe('ok');
     expect(find(report, 'anthropic API key')?.status).toBe('ok');
     expect(find(report, 'semantic search')?.status).toBe('ok');
     expect(find(report, 'MCP servers')?.detail).toContain('docs (stdio)');
@@ -48,6 +49,7 @@ describe('runDoctor', () => {
   it('flags a missing key and disabled semantic search as warnings', async () => {
     const report = await runDoctor({ cwd, homeDir: home, env: {} });
     expect(report.ok).toBe(true);
+    expect(find(report, 'deepseek API key')?.status).toBe('warn');
     expect(find(report, 'anthropic API key')?.status).toBe('warn');
     expect(find(report, 'openai API key')?.status).toBe('warn');
     expect(find(report, 'semantic search')?.status).toBe('warn');

@@ -5,7 +5,7 @@
 对标 Claude Code / Aider / Gemini CLI，强调三件事：
 
 - **可控**：四种权限模式 + allow/deny 规则 + 危险命令识别，默认不会替你删库。
-- **可换**：Anthropic / OpenAI 统一抽象，换 provider 或本地兼容端点只改配置。
+- **可换**：DeepSeek / Anthropic / OpenAI 统一抽象，换 provider 或本地兼容端点只改配置。
 - **可扩展**：内置工具之外，MCP server 的工具会被自动发现并暴露给模型。
 
 > 状态：M0–M7 开发完成（内核、工具、权限、会话、RAG、编排、MCP、分发打磨）。npm 发布尚待确定包名与许可。
@@ -13,7 +13,7 @@
 ## 要求
 
 - Node.js **>= 22.5**（会话与索引使用内置 `node:sqlite`）
-- 一个模型 API key（默认 Anthropic）
+- 一个模型 API key（默认 DeepSeek）
 
 ## 安装
 
@@ -49,8 +49,14 @@ cake --permission-mode plan "解释这个仓库的鉴权流程"
 首次运行前设置密钥：
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-# 需要 @codebase 语义检索时还需要
+# 默认 provider 是 DeepSeek（deepseek-chat）
+export DEEPSEEK_API_KEY=sk-...
+
+# 想用 Anthropic / OpenAI 时再设置对应密钥并加 --provider
+# export ANTHROPIC_API_KEY=sk-ant-...
+# export OPENAI_API_KEY=sk-...
+
+# 需要 @codebase 语义检索时还需要（嵌入模型目前只来自 OpenAI）
 export OPENAI_API_KEY=sk-...
 ```
 
@@ -64,17 +70,17 @@ cake --doctor
 
 ## 常用参数
 
-| 参数 | 作用 |
-|---|---|
-| `cake "<prompt>"` / `-p` | 非交互执行，流式输出后退出 |
-| `-y, --yes` | yolo 模式，所有工具调用免审批 |
-| `--permission-mode <m>` | `plan` / `default` / `acceptEdits` / `yolo` |
-| `--provider <id>` | `anthropic` / `openai` |
-| `-m, --model <id>` | 覆盖默认模型 |
-| `-c, --continue` | 续跑当前工作区最近的会话 |
-| `--resume <id>` | 续跑指定会话 |
-| `--doctor` | 环境与配置诊断 |
-| `-v, --version` / `-h, --help` | 版本 / 帮助 |
+| 参数                           | 作用                                        |
+| ------------------------------ | ------------------------------------------- |
+| `cake "<prompt>"` / `-p`       | 非交互执行，流式输出后退出                  |
+| `-y, --yes`                    | yolo 模式，所有工具调用免审批               |
+| `--permission-mode <m>`        | `plan` / `default` / `acceptEdits` / `yolo` |
+| `--provider <id>`              | `deepseek`（默认）/ `anthropic` / `openai`  |
+| `-m, --model <id>`             | 覆盖默认模型                                |
+| `-c, --continue`               | 续跑当前工作区最近的会话                    |
+| `--resume <id>`                | 续跑指定会话                                |
+| `--doctor`                     | 环境与配置诊断                              |
+| `-v, --version` / `-h, --help` | 版本 / 帮助                                 |
 
 交互模式下的输入：
 
@@ -84,12 +90,12 @@ cake --doctor
 
 ## 权限模型
 
-| 模式 | 行为 |
-|---|---|
-| `plan` | 只读：读文件、搜索；禁止写文件、shell、git 写操作 |
-| `default` | 读操作放行；写文件与 shell 需要逐次审批 |
-| `acceptEdits` | 写文件放行；shell 仍需审批 |
-| `yolo` | 全部放行 |
+| 模式          | 行为                                              |
+| ------------- | ------------------------------------------------- |
+| `plan`        | 只读：读文件、搜索；禁止写文件、shell、git 写操作 |
+| `default`     | 读操作放行；写文件与 shell 需要逐次审批           |
+| `acceptEdits` | 写文件放行；shell 仍需审批                        |
+| `yolo`        | 全部放行                                          |
 
 项目级规则写在 `.cake/settings.json`（全局为 `~/.cake/settings.json`，两处会合并）：
 
@@ -110,18 +116,19 @@ cake --doctor
 
 ```json
 {
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-5",
+  "provider": "deepseek",
+  "model": "deepseek-chat",
   "providers": {
+    "deepseek": { "apiKey": "...", "model": "deepseek-chat" },
     "anthropic": { "apiKey": "...", "model": "claude-sonnet-4-5" },
     "openai": { "apiKey": "...", "baseURL": "https://api.openai.com/v1" }
   }
 }
 ```
 
-支持的环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`CAKE_PROVIDER`、`CAKE_MODEL`、`ANTHROPIC_BASE_URL`、`OPENAI_BASE_URL`。密钥优先级：显式配置 > 环境变量 > 配置文件。
+支持的环境变量：`DEEPSEEK_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`CAKE_PROVIDER`、`CAKE_MODEL`、`DEEPSEEK_BASE_URL`、`ANTHROPIC_BASE_URL`、`OPENAI_BASE_URL`。密钥优先级：显式配置 > 环境变量 > 配置文件。
 
-> 用兼容 Anthropic / OpenAI 协议的本地或第三方端点时，改 `baseURL` 即可。
+> DeepSeek 走 OpenAI 兼容的 chat completions 协议（默认模型 `deepseek-chat`，支持工具调用）；`deepseek-reasoner` 不支持工具调用，agent 场景请用 `deepseek-chat`。接入本地或第三方兼容端点时，把 `providers.deepseek.baseURL` 或 `DEEPSEEK_BASE_URL` 指向对应地址即可。
 
 ## MCP
 
@@ -176,6 +183,42 @@ cake "@codebase 这个仓库在哪里处理 token 刷新？"
 - 会话历史存 `.cake/sessions/cake.db`，`cake -c` 续跑最近一次
 - 历史接近上下文窗口时自动压缩（保留摘要 + 近期消息）
 - `CAKE_TRACE=1 cake "..."` 会把工具调用/结果/错误写进 `.cake/logs/run-*.jsonl`（本地文件，默认关闭，不上传任何数据）
+
+## 桌面端界面
+
+Electron 窗口是三栏布局：左侧会话栏（搜索 / 重命名 / 删除会话、切换工作区），中间对话区（审批卡、工具卡片与 diff、复制消息、跳转最新），右侧 inspector（Changes / Context / Files）。
+
+- 输入框工具栏整合 provider/model 切换、权限模式与上下文占比（蛋糕切片仪表），模型与模式菜单向上展开
+- 顶部保留命令面板、夜间 / 羊皮纸主题（默认羊皮纸浅色，选择会记住）与 inspector 开关
+- `Ctrl K` 命令面板，`Ctrl N` 新会话，`Ctrl B` 折叠会话栏，`Ctrl J` 折叠 inspector
+- 输入框支持 `/` 命令（`/help`、`/model`、`/mode`、`/files`、`/mcp`、`/doctor`、`/cost`、`/new`）和 `@` 文件补全
+- 窄窗口下会话栏与 inspector 变为浮层，一次只显示一个
+
+## 打包二进制
+
+产物输出到 `release/`（已 gitignore）：
+
+| 命令                       | 产物                                                              | 说明                                                    |
+| -------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------- |
+| `npm run cli:binary`       | `release/cake.exe`                                                | CLI 单文件（Node SEA），内含所有依赖与 tree-sitter wasm |
+| `npm run desktop:dist`     | `release/cake-0.1.0-setup.exe`、`release/cake-0.1.0-portable.exe` | Electron 安装包 / 便携版                                |
+| `npm run desktop:dist:dir` | `release/win-unpacked/`                                           | 未打包目录，便于本地验证                                |
+
+CLI 二进制需要 Node >= 26.9 作为 SEA 基底（Ink 8 的 top-level await 要求 ESM 入口），本机 Node 版本较低时用环境变量指定：
+
+```bash
+CAKE_SEA_NODE=/path/to/node26/node.exe npm run cli:binary
+```
+
+SEA 构建会把 wasm 资产解压到 `~/.cake/runtime/<version>/wasm`，通过 `CAKE_WASM_DIR` 交给 tree-sitter。网络受限时给 electron-builder 配镜像：
+
+```bash
+ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
+ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ \
+npm run desktop:dist
+```
+
+安装包未签名，Windows SmartScreen 会提示；正式分发前需配置证书。
 
 ## 开发
 

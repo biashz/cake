@@ -40,6 +40,14 @@ describe('estimateCost', () => {
     expect(cost).toBeCloseTo(15, 6);
   });
 
+  it('prices deepseek at $0.28 in / $0.42 out per 1M tokens', () => {
+    const cost = estimateCost(
+      { provider: 'deepseek', modelId: 'deepseek-chat' },
+      { inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000 },
+    );
+    expect(cost).toBeCloseTo(0.7, 6);
+  });
+
   it('returns 0 for unknown models', () => {
     const cost = estimateCost(
       { provider: 'mystery', modelId: 'unknown' },

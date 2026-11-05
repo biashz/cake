@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+test-results/
+playwright-report/
 *.log
 .env
 .env.*
@@ -9,3 +11,4 @@ coverage/
 .cake/sessions/
 .cake/cache/
 .cake/index/
+release/

@@ -130,6 +130,14 @@ export class SessionStore {
     return row ? toMeta(row) : undefined;
   }
 
+  /** Recent sessions for one workspace, newest first. */
+  list(cwd: string, limit = 50): SessionMeta[] {
+    const rows = this.db
+      .prepare('SELECT * FROM sessions WHERE cwd = ? ORDER BY updated_at DESC LIMIT ?')
+      .all(cwd, limit) as unknown as SessionRow[];
+    return rows.map(toMeta);
+  }
+
   messages(id: string): ModelMessage[] {
     const rows = this.db
       .prepare('SELECT payload FROM messages WHERE session_id = ? ORDER BY seq')
@@ -176,6 +184,25 @@ export class SessionStore {
     this.db
       .prepare('UPDATE sessions SET provider = ?, model = ?, updated_at = ? WHERE id = ?')
       .run(provider, model, Date.now(), id);
+  }
+
+  /** Rename without touching `updated_at`, so renaming does not reorder the list. */
+  rename(id: string, title: string): void {
+    this.db
+      .prepare('UPDATE sessions SET title = ? WHERE id = ?')
+      .run(title.slice(0, 80).trim(), id);
+  }
+
+  delete(id: string): void {
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
+      this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   close(): void {

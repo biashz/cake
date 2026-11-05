@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "DOM"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
@@ -16,7 +16,8 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
+    "typeRoots": ["./node_modules/@types"],
     "types": ["node", "react"]
   },
-  "include": ["src", "test", "*.config.ts"]
+  "include": ["src", "test", "web", "e2e", "*.config.ts"]
 }

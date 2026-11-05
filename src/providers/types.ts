@@ -4,7 +4,7 @@ import type { EmbeddingModel, LanguageModel } from 'ai';
  * Provider identifier. Known providers get literal types; arbitrary strings are
  * allowed so custom/self-hosted providers can be registered later.
  */
-export type ProviderId = 'anthropic' | 'openai' | (string & {});
+export type ProviderId = 'deepseek' | 'anthropic' | 'openai' | (string & {});
 
 /** A fully-qualified model selection: which provider, which model. */
 export interface ModelSpec {

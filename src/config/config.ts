@@ -14,6 +14,7 @@ const ConfigSchema = z.object({
   model: z.string().optional(),
   providers: z
     .object({
+      deepseek: ProviderConfigSchema.optional(),
       anthropic: ProviderConfigSchema.optional(),
       openai: ProviderConfigSchema.optional(),
     })
@@ -34,12 +35,13 @@ export interface CakeConfig {
   /** Default model id (undefined → provider default). */
   model?: string;
   providers: {
+    deepseek?: ProviderConfig;
     anthropic?: ProviderConfig;
     openai?: ProviderConfig;
   };
 }
 
-const DEFAULT_PROVIDER = 'anthropic';
+const DEFAULT_PROVIDER = 'deepseek';
 
 export interface LoadConfigOptions {
   cwd?: string;
@@ -79,9 +81,12 @@ export function loadConfig(opts: LoadConfigOptions = {}): CakeConfig {
   const model = env.CAKE_MODEL ?? merged.model;
 
   const providers: CakeConfig['providers'] = {
+    deepseek: { ...merged.providers?.deepseek },
     anthropic: { ...merged.providers?.anthropic },
     openai: { ...merged.providers?.openai },
   };
+  if (env.DEEPSEEK_BASE_URL)
+    providers.deepseek = { ...providers.deepseek, baseURL: env.DEEPSEEK_BASE_URL };
   if (env.ANTHROPIC_BASE_URL)
     providers.anthropic = { ...providers.anthropic, baseURL: env.ANTHROPIC_BASE_URL };
   if (env.OPENAI_BASE_URL) providers.openai = { ...providers.openai, baseURL: env.OPENAI_BASE_URL };
@@ -117,6 +122,7 @@ function mergeConfigs(base?: RawConfig, override?: RawConfig): RawConfig {
     provider: override.provider ?? base.provider,
     model: override.model ?? base.model,
     providers: {
+      deepseek: { ...base.providers?.deepseek, ...override.providers?.deepseek },
       anthropic: { ...base.providers?.anthropic, ...override.providers?.anthropic },
       openai: { ...base.providers?.openai, ...override.providers?.openai },
     },
