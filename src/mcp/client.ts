@@ -5,11 +5,11 @@ import {
 } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { CakeTool } from '../tools/types.js';
+import { VERSION } from '../version.js';
 import { adaptMcpTool, createMcpMetaTool, type McpToolSource, mcpToolName } from './adapt.js';
 import { loadMcpConfig, type McpServerConfig } from './config.js';
 
 const CONNECT_TIMEOUT_MS = 15_000;
-const VERSION = '0.0.0';
 
 export interface McpBundle {
   tools: CakeTool[];

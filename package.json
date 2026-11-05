@@ -1,7 +1,14 @@
 {
   "name": "cake",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Cake — a TypeScript CLI programming agent",
+  "keywords": [
+    "cli",
+    "agent",
+    "coding-agent",
+    "ai",
+    "mcp"
+  ],
   "type": "module",
   "license": "UNLICENSED",
   "bin": {
@@ -15,6 +22,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "prepack": "npm run build",
     "dev": "tsup --watch",
     "cake": "tsx src/cli.tsx",
     "start": "node dist/cli.js",

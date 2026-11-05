@@ -13,7 +13,9 @@ import {
 import { addUsage, formatCost } from './core/cost.js';
 import type { AgentEvent, TokenUsage } from './core/events.js';
 import { expandFileReferences } from './core/mentions.js';
+import { formatDoctor, runDoctor } from './diagnostics/doctor.js';
 import { openMcpServers } from './mcp/client.js';
+import { createTrace } from './observability/trace.js';
 import { createAgentTool } from './orchestration/tool.js';
 import type { PermissionRules } from './permissions/rules.js';
 import { loadSettings } from './permissions/settings.js';
@@ -25,8 +27,8 @@ import { createRagTools } from './rag/tools.js';
 import { defaultSessionFile, type SessionMeta, SessionStore } from './session/store.js';
 import { buildToolSet, createDefaultTools } from './tools/registry.js';
 import type { CakeTool, PermissionMode, ToolContext } from './tools/types.js';
+import { VERSION } from './version.js';
 
-const VERSION = '0.0.0';
 const PERMISSION_MODES: PermissionMode[] = ['plan', 'default', 'acceptEdits', 'yolo'];
 
 async function main(): Promise<void> {
@@ -40,6 +42,7 @@ async function main(): Promise<void> {
       'permission-mode': { type: 'string' },
       resume: { type: 'string' },
       continue: { type: 'boolean', short: 'c', default: false },
+      doctor: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', short: 'v', default: false },
     },
@@ -55,6 +58,12 @@ async function main(): Promise<void> {
   }
 
   const cwd = process.cwd();
+  if (values.doctor) {
+    const report = await runDoctor({ cwd });
+    process.stdout.write(`${formatDoctor(report)}\n`);
+    if (!report.ok) process.exitCode = 1;
+    return;
+  }
   const config = loadConfig();
   const registry = createDefaultRegistry(config);
 
@@ -82,6 +91,7 @@ async function main(): Promise<void> {
         `No API key found for provider "${providerId}".`,
         `  • Set ${provider.apiKeyEnvVar} in your environment, or`,
         `  • add "providers.${providerId}.apiKey" to ~/.cake/config.json`,
+        '  • run "cake --doctor" to inspect providers, MCP servers, and the index',
       ].join('\n'),
     );
   }
@@ -227,6 +237,8 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
   const controller = new AbortController();
   const onSigint = () => controller.abort();
   process.once('SIGINT', onSigint);
+  const trace = createTrace(cwd);
+  if (trace) process.stderr.write(`[trace] ${trace.file}\n`);
 
   const nestedUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   let nestedCostUsd = 0;
@@ -251,6 +263,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
   };
 
   const handleEvent = (event: AgentEvent) => {
+    trace?.record(event);
     switch (event.type) {
       case 'text-delta':
         process.stdout.write(event.delta);
@@ -385,6 +398,7 @@ function printHelp(): void {
       '  -m, --model <id>          Model id (overrides config/default)',
       '  -c, --continue            Resume the most recent session in this workspace',
       '      --resume <id>         Resume a session by id',
+      '      --doctor              Diagnose Node, providers, config, settings, MCP, sessions, index',
       '  -h, --help                Show this help',
       '  -v, --version             Print version',
       '',

@@ -6,6 +6,7 @@ import { createHistorySummarizer, maybeCompress } from '../core/context.js';
 import { addUsage, formatCost } from '../core/cost.js';
 import type { AgentEvent, TokenUsage } from '../core/events.js';
 import { expandFileReferences } from '../core/mentions.js';
+import { createTrace } from '../observability/trace.js';
 import { createAgentTool } from '../orchestration/tool.js';
 import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -83,6 +84,8 @@ export function App(props: AppProps) {
   const nextId = useRef(0);
   const approvalQueue = useRef<Promise<void>>(Promise.resolve());
   const abortedRef = useRef(false);
+  const [trace] = useState(() => createTrace(process.cwd()));
+  const traceAnnounced = useRef(false);
 
   useEffect(() => () => store.close(), [store]);
 
@@ -226,6 +229,11 @@ export function App(props: AppProps) {
     };
 
     function handleEvent(event: AgentEvent): void {
+      trace?.record(event);
+      if (trace && !traceAnnounced.current) {
+        traceAnnounced.current = true;
+        addEntry({ role: 'info', text: `trace → ${trace.file}` });
+      }
       switch (event.type) {
         case 'text-delta':
           acc += event.delta;
