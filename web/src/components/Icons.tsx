@@ -16,6 +16,11 @@ export type IconName =
   | 'panel'
   | 'sun'
   | 'moon'
+  | 'contrast'
+  | 'layers'
+  | 'stop'
+  | 'refresh'
+  | 'clock'
   | 'command'
   | 'file'
   | 'terminal'
@@ -38,6 +43,11 @@ const PATHS: Record<IconName, string> = {
   panel: 'M4 5h16v14H4zM15 5v14',
   sun: 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10ZM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',
   moon: 'M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z',
+  contrast: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM12 3v18',
+  layers: 'M12 3 3 8l9 5 9-5-9-5ZM3 13l9 5 9-5M3 16.5l9 5 9-5',
+  stop: 'M7 7h10v10H7z',
+  refresh: 'M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4',
+  clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7v5l3.5 2',
   command:
     'M9 6a3 3 0 1 0-3 3h3V6Zm0 0h6m0 0a3 3 0 1 1 3 3h-3V6ZM9 18a3 3 0 1 0-3-3h3v3Zm0 0h6m0 0a3 3 0 1 0 3-3h-3v3Zm0-6v-6M9 12v6',
   file: 'M6 3h8l4 4v14H6zM14 3v4h4',

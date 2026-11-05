@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  ContextPayload,
   DoctorReportPayload,
   InitPayload,
   RunResult,
@@ -16,12 +17,34 @@ import {
 const initPayload: InitPayload = {
   version: '0.1.0',
   workspace: null,
+  recents: [],
   providers: [],
   model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
   mode: 'default',
   rules: { allow: [], deny: [] },
   mcpStatus: { servers: [], tools: 0, warnings: [] },
   missingKeys: [],
+};
+
+const contextPayload: ContextPayload = {
+  layers: [
+    {
+      id: 'system',
+      label: 'System',
+      tokens: 900,
+      entries: [{ label: 'Agent instructions', tokens: 900 }],
+    },
+    {
+      id: 'history',
+      label: 'History',
+      tokens: 2100,
+      entries: [{ label: 'assistant', tokens: 2100 }],
+    },
+  ],
+  maxContext: 128_000,
+  used: 3000,
+  free: 125_000,
+  estimated: true,
 };
 
 const session: SessionInfo = {
@@ -66,6 +89,7 @@ function backend(): DesktopBackend {
     reloadMcp: vi.fn(async () => initPayload),
     listFiles: vi.fn(async () => ['src/a.ts']),
     runDoctor: vi.fn(async () => doctorReport),
+    contextLayers: vi.fn(() => contextPayload),
   };
 }
 
@@ -86,6 +110,7 @@ describe('desktop IPC handlers', () => {
     expect(await handlers['session:delete']?.({ id: 'session-1' })).toEqual(sessionPayload);
     expect(fake.deleteSession).toHaveBeenCalledWith('session-1');
     expect(await handlers['doctor:run']?.(undefined)).toEqual(doctorReport);
+    expect(await handlers['context:layers']?.(undefined)).toEqual(contextPayload);
     expect(fake.runDoctor).toHaveBeenCalledTimes(1);
   });
 

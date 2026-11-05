@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import type { InitPayload, ModelHandle, PermissionModeName } from '../../../src/desktop/api.js';
+import type {
+  ContextPayload,
+  InitPayload,
+  ModelHandle,
+  PermissionModeName,
+} from '../../../src/desktop/api.js';
 import { SLASH_COMMANDS, type SlashCommand } from '../commands';
 import { MODE_LABEL, ModelMenu, ModeMenu, useDismiss } from './AgentMenus';
-import { ContextSlice } from './ContextSlice';
 import { Icon } from './Icons';
+import { SliceStrip } from './Slice';
 
 interface Suggestion {
   value: string;
@@ -29,8 +34,7 @@ export function Composer({
   commands = SLASH_COMMANDS,
   focusToken = 0,
   init,
-  used = 0,
-  maxContext = 0,
+  context = null,
   modelMenuSignal = 0,
   modeMenuSignal = 0,
   onSetModel,
@@ -46,8 +50,7 @@ export function Composer({
   commands?: SlashCommand[];
   focusToken?: number;
   init?: InitPayload;
-  used?: number;
-  maxContext?: number;
+  context?: ContextPayload | null;
   modelMenuSignal?: number;
   modeMenuSignal?: number;
   onSetModel?: (model: ModelHandle) => void;
@@ -179,10 +182,10 @@ export function Composer({
   };
 
   const controls = init && onSetModel && onSetMode;
-  const percent = maxContext > 0 ? Math.round(Math.min(used / maxContext, 1) * 100) : 0;
-  const contextTitle = maxContext
-    ? `${percent}% of ${maxContext.toLocaleString()} tokens · ${used.toLocaleString()} used`
-    : 'Context usage unknown';
+  const percent =
+    context && context.maxContext > 0
+      ? Math.round(Math.min(context.used / context.maxContext, 1) * 100)
+      : 0;
 
   return (
     <div className="composer-wrap">
@@ -322,8 +325,8 @@ export function Composer({
 
           <div className="composer-actions">
             {init ? (
-              <span className="composer-context" title={contextTitle}>
-                <ContextSlice used={used} max={maxContext} running={running} size={24} />
+              <span className="composer-context">
+                <SliceStrip context={context} />
                 <span className="composer-context-value mono">{percent}%</span>
               </span>
             ) : null}

@@ -1,7 +1,12 @@
 import { stat } from 'node:fs/promises';
 import fg from 'fast-glob';
 import { loadConfig } from '../config/config.js';
-import { buildSystemPrompt, loadProjectInstructions } from '../core/context.js';
+import {
+  buildSystemPrompt,
+  estimateTextTokens,
+  loadProjectSections,
+  type ProjectSection,
+} from '../core/context.js';
 import type { AgentEvent } from '../core/events.js';
 import { runDoctor as diagnose } from '../diagnostics/doctor.js';
 import { type McpBundle, openMcpServers } from '../mcp/client.js';
@@ -21,18 +26,22 @@ import type {
 } from '../tools/types.js';
 import { VERSION } from '../version.js';
 import type {
+  ContextEntryPayload,
+  ContextPayload,
   DoctorReportPayload,
   InitPayload,
   ModelHandle,
   PermissionModeName,
   ProviderSummary,
 } from './api.js';
+import { buildContextMap } from './context-map.js';
 import type { DesktopBackend } from './ipc.js';
 import { toWireEvent } from './ipc.js';
 import { loadDesktopState, saveDesktopState } from './state.js';
 
 const IGNORED_GLOBS = ['.git/**', 'node_modules/**', '.cake/**', 'dist/**', 'release/**'];
 const FILE_RESULT_LIMIT = 50;
+const RECENT_LIMIT = 8;
 
 export interface ControllerDeps {
   /** `userData/state.json` in production; a temp file in tests. */
@@ -47,6 +56,9 @@ interface ActiveWorkspace {
   cwd: string;
   store: SessionStore;
   system: string;
+  /** System prompt without the project-instructions section; a Slice layer. */
+  systemBase: string;
+  projectSections: ProjectSection[];
   rules: PermissionRules;
   mcp: McpBundle;
   embedder: Embedder | undefined;
@@ -70,8 +82,11 @@ export class WorkspaceController implements DesktopBackend {
 
   private active: ActiveWorkspace | undefined;
   private fallbackRules: PermissionRules = { allow: [], deny: [] };
+  private recents: string[] = [];
   private busy = false;
   private currentAbort: AbortController | null = null;
+  /** Work produced by the live run, attributed to the Slice's "This turn" layer. */
+  private turnEntries: ContextEntryPayload[] = [];
   private readonly approvals = new Map<string, (decision: PermissionDecision) => void>();
   private approvalSeq = 0;
 
@@ -87,16 +102,13 @@ export class WorkspaceController implements DesktopBackend {
   /** Reopen the last workspace when it still exists, then report the full state. */
   async init(): Promise<InitPayload> {
     this.fallbackRules = (await loadSettings({ homeDir: this.homeDir })).permissions;
-    if (!this.active) {
-      const state = await loadDesktopState(this.stateFile);
-      if (state.lastWorkspace) {
-        try {
-          const info = await stat(state.lastWorkspace);
-          if (!info.isDirectory()) throw new Error('not a directory');
-          await this.openWorkspace(state.lastWorkspace);
-        } catch {
-          await saveDesktopState(this.stateFile, {});
-        }
+    const state = await loadDesktopState(this.stateFile);
+    this.recents = await this.existingDirs(state.recents ?? []);
+    if (!this.active && state.lastWorkspace) {
+      try {
+        await this.openWorkspace(state.lastWorkspace);
+      } catch {
+        await this.writeState(undefined);
       }
     }
     return this.snapshot();
@@ -108,10 +120,13 @@ export class WorkspaceController implements DesktopBackend {
     await this.closeActive();
 
     const settings = await loadSettings({ cwd, homeDir: this.homeDir });
-    const system = buildSystemPrompt({
-      cwd,
-      projectInstructions: await loadProjectInstructions(cwd),
-    });
+    const projectSections = await loadProjectSections(cwd);
+    const projectInstructions =
+      projectSections.length > 0
+        ? projectSections.map((section) => `## ${section.path}\n${section.text}`).join('\n\n')
+        : undefined;
+    const system = buildSystemPrompt({ cwd, projectInstructions });
+    const systemBase = buildSystemPrompt({ cwd });
     const mcp = await openMcpServers({ cwd });
     const store = SessionStore.open(defaultSessionFile(cwd));
     try {
@@ -132,6 +147,8 @@ export class WorkspaceController implements DesktopBackend {
         cwd,
         store,
         system,
+        systemBase,
+        projectSections,
         rules: settings.permissions,
         mcp,
         embedder: resolveEmbedder(this.registry),
@@ -145,9 +162,24 @@ export class WorkspaceController implements DesktopBackend {
       throw err;
     }
 
-    await saveDesktopState(this.stateFile, { lastWorkspace: cwd });
+    this.recents = [cwd, ...this.recents.filter((item) => item !== cwd)].slice(0, RECENT_LIMIT);
+    await this.writeState(cwd);
+    this.turnEntries = [];
     this.sendMcpStatus();
     return this.snapshot();
+  }
+
+  /** Layer-by-layer composition of the context window for the desktop Slice. */
+  contextLayers(): ContextPayload {
+    const active = this.requireActive();
+    const provider = this.registry.get(active.model.provider);
+    return buildContextMap({
+      systemBase: active.systemBase,
+      projectSections: active.projectSections,
+      messages: active.store.messages(active.session.id),
+      turn: this.turnEntries,
+      maxContext: provider.capabilities(active.model.modelId).maxContext,
+    });
   }
 
   listSessions(): SessionMeta[] {
@@ -213,7 +245,12 @@ export class WorkspaceController implements DesktopBackend {
     this.busy = true;
     const controller = new AbortController();
     this.currentAbort = controller;
-    const emit = (event: AgentEvent) => this.send('agent:event', toWireEvent(event));
+    this.turnEntries = [];
+    this.addTurnEntry('Prompt', estimateTextTokens(prompt));
+    const emit = (event: AgentEvent) => {
+      this.trackTurnEvent(event);
+      this.send('agent:event', toWireEvent(event));
+    };
 
     try {
       const tools = buildToolCatalog(active.embedder, active.mcp.tools, {
@@ -260,6 +297,7 @@ export class WorkspaceController implements DesktopBackend {
     } finally {
       this.busy = false;
       this.currentAbort = null;
+      this.turnEntries = [];
       this.denyAllApprovals();
     }
   }
@@ -349,6 +387,7 @@ export class WorkspaceController implements DesktopBackend {
     return {
       version: VERSION,
       workspace: active ? { cwd: active.cwd, sessionId: active.session.id } : null,
+      recents: this.recents,
       providers,
       model: active?.model ?? { provider: providerId, modelId: fallbackModelId },
       mode: active?.mode ?? 'default',
@@ -413,6 +452,7 @@ export class WorkspaceController implements DesktopBackend {
     }
     active.session = active.store.get(session.id) ?? session;
     active.model = model;
+    this.turnEntries = [];
   }
 
   private resolveSessionModel(session: SessionMeta): ModelSpec {
@@ -441,6 +481,56 @@ export class WorkspaceController implements DesktopBackend {
   private requireActive(): ActiveWorkspace {
     if (!this.active) throw new Error('No workspace is open');
     return this.active;
+  }
+
+  private async writeState(lastWorkspace: string | undefined): Promise<void> {
+    await saveDesktopState(this.stateFile, { lastWorkspace, recents: this.recents });
+  }
+
+  /** Recents go stale when folders move, so only live directories are offered. */
+  private async existingDirs(dirs: string[]): Promise<string[]> {
+    const alive: string[] = [];
+    for (const dir of dirs) {
+      try {
+        const info = await stat(dir);
+        if (info.isDirectory()) alive.push(dir);
+      } catch {
+        // Unreadable or gone: drop it from the list.
+      }
+    }
+    return alive.slice(0, RECENT_LIMIT);
+  }
+
+  private addTurnEntry(label: string, tokens: number): void {
+    if (tokens <= 0) return;
+    const found = this.turnEntries.find((entry) => entry.label === label);
+    if (found) found.tokens += tokens;
+    else this.turnEntries.push({ label, tokens });
+  }
+
+  /** Keeps the Slice's turn layer honest while a run is in flight. */
+  private trackTurnEvent(event: AgentEvent): void {
+    switch (event.type) {
+      case 'text-delta':
+        this.addTurnEntry('Reply', Math.max(1, estimateTextTokens(event.delta)));
+        break;
+      case 'tool-call':
+        this.addTurnEntry(
+          `→ ${event.toolName}`,
+          estimateTextTokens(JSON.stringify(event.input ?? {})),
+        );
+        break;
+      case 'tool-result':
+        this.addTurnEntry(
+          `← ${event.toolName}`,
+          estimateTextTokens(
+            typeof event.output === 'string' ? event.output : JSON.stringify(event.output ?? ''),
+          ),
+        );
+        break;
+      default:
+        break;
+    }
   }
 
   private async closeActive(): Promise<void> {

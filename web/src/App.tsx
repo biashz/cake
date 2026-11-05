@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatCost } from '../../src/core/cost.js';
 import type {
+  ContextPayload,
   DoctorReportPayload,
   InitPayload,
   ModelHandle,
@@ -14,13 +15,28 @@ import { collectChanges } from './changes';
 import { ApprovalCard } from './components/ApprovalCard';
 import { CommandPalette, type PaletteAction } from './components/CommandPalette';
 import { Composer } from './components/Composer';
+import { HeatBar } from './components/HeatBar';
 import { Icon } from './components/Icons';
 import { Inspector, type InspectorTab } from './components/Inspector';
 import { SessionHeader } from './components/SessionHeader';
 import { Sidebar } from './components/Sidebar';
+import { Splitter } from './components/Splitter';
 import { Transcript } from './components/Transcript';
 import type { WireAgentEvent } from './events';
-import { applyTheme, loadPrefs, savePrefs, type UiPrefs } from './prefs';
+import {
+  applyTheme,
+  clampInspectorWidth,
+  clampRailWidth,
+  INSPECTOR_RANGE,
+  INSPECTOR_RESET,
+  loadPrefs,
+  nextTheme,
+  RAIL_RANGE,
+  RAIL_RESET,
+  savePrefs,
+  THEME_LABEL,
+  type UiPrefs,
+} from './prefs';
 import { attachToolResult, type Entry, entriesFromMessages } from './transcript';
 
 const MODE_NAMES: PermissionModeName[] = ['plan', 'default', 'acceptEdits', 'yolo'];
@@ -111,6 +127,8 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUsage, setLastUsage] = useState<TokenTotals | null>(null);
+  const [context, setContext] = useState<ContextPayload | null>(null);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [doctor, setDoctor] = useState<DoctorReportPayload | null>(null);
   const [doctorBusy, setDoctorBusy] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -152,6 +170,10 @@ export function App() {
     (raw: unknown) => {
       const event = raw as WireAgentEvent;
       switch (event.type) {
+        case 'start': {
+          setStartedAt(Date.now());
+          break;
+        }
         case 'text-delta': {
           streamRef.current += event.delta;
           if (flushTimer.current === null) {
@@ -214,6 +236,17 @@ export function App() {
       setSessions(await api.listSessions());
     } catch (err) {
       setError(message(err));
+    }
+  }, []);
+
+  /** The Slice reads the kernel's own accounting, so it refreshes with the session. */
+  const refreshContext = useCallback(async () => {
+    const api = window.cake;
+    if (!api) return;
+    try {
+      setContext(await api.contextLayers());
+    } catch {
+      setContext(null);
     }
   }, []);
 
@@ -295,6 +328,23 @@ export function App() {
     };
   }, [handleEvent, addEntry]);
 
+  const activeSessionId = init?.workspace?.sessionId;
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      setContext(null);
+      return;
+    }
+    void refreshContext();
+  }, [activeSessionId, refreshContext]);
+
+  // The turn layer grows while a run is in flight; the strip should breathe with it.
+  useEffect(() => {
+    if (!running || !activeSessionId) return;
+    const timer = setInterval(() => void refreshContext(), 2000);
+    return () => clearInterval(timer);
+  }, [running, activeSessionId, refreshContext]);
+
   const newSession = useCallback(async () => {
     const api = window.cake;
     if (!api || runningRef.current || !init?.workspace) return;
@@ -357,31 +407,47 @@ export function App() {
     [applySession, refreshSessions],
   );
 
+  const openFolder = useCallback(
+    async (picked: string) => {
+      const api = window.cake;
+      if (!api || runningRef.current) return;
+      setBusy(true);
+      try {
+        const payload = await api.openWorkspace(picked);
+        setInit(payload);
+        nextId.current = 0;
+        setEntries([]);
+        setStreaming('');
+        setApprovals([]);
+        setLastUsage(null);
+        setDoctor(null);
+        if (payload.workspace) await loadSession(payload.workspace.sessionId);
+        await refreshSessions();
+        setError(null);
+        setFocusToken((value) => value + 1);
+      } catch (err) {
+        setError(message(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadSession, refreshSessions],
+  );
+
   const openWorkspace = useCallback(async () => {
     const api = window.cake;
     if (!api || runningRef.current) return;
     setBusy(true);
+    let picked: string | null = null;
     try {
-      const picked = await api.pickWorkspace();
-      if (!picked) return;
-      const payload = await api.openWorkspace(picked);
-      setInit(payload);
-      nextId.current = 0;
-      setEntries([]);
-      setStreaming('');
-      setApprovals([]);
-      setLastUsage(null);
-      setDoctor(null);
-      if (payload.workspace) await loadSession(payload.workspace.sessionId);
-      await refreshSessions();
-      setError(null);
-      setFocusToken((value) => value + 1);
+      picked = await api.pickWorkspace();
     } catch (err) {
       setError(message(err));
     } finally {
       setBusy(false);
     }
-  }, [loadSession, refreshSessions]);
+    if (picked) await openFolder(picked);
+  }, [openFolder]);
 
   const changeModel = useCallback(
     async (model: ModelHandle) => {
@@ -391,6 +457,7 @@ export function App() {
       try {
         setInit(await api.setModel(model));
         await refreshSessions();
+        await refreshContext();
         setError(null);
       } catch (err) {
         setError(message(err));
@@ -398,7 +465,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [refreshSessions],
+    [refreshSessions, refreshContext],
   );
 
   const changeMode = useCallback(async (mode: PermissionModeName) => {
@@ -546,6 +613,7 @@ export function App() {
     addEntry({ role: 'user', text: raw });
     runningRef.current = true;
     setRunning(true);
+    setStartedAt(Date.now());
     try {
       await window.cake?.run(sessionId, raw);
     } catch (err) {
@@ -554,12 +622,23 @@ export function App() {
       runningRef.current = false;
       setRunning(false);
       setApprovals([]);
+      setStartedAt(null);
       const leftover = takeStream();
       if (leftover.trim()) addEntry({ role: 'assistant', text: leftover });
       await refreshSessions();
+      await refreshContext();
       setFocusToken((value) => value + 1);
     }
-  }, [prompt, init?.workspace?.sessionId, busy, runSlash, addEntry, takeStream, refreshSessions]);
+  }, [
+    prompt,
+    init?.workspace?.sessionId,
+    busy,
+    runSlash,
+    addEntry,
+    takeStream,
+    refreshSessions,
+    refreshContext,
+  ]);
 
   const stop = useCallback(() => {
     void window.cake?.abort();
@@ -610,11 +689,19 @@ export function App() {
   }, []);
 
   const toggleTheme = useCallback(() => {
-    setPrefs((current) => ({
-      ...current,
-      theme: current.theme === 'night' ? 'parchment' : 'night',
-    }));
+    setPrefs((current) => ({ ...current, theme: nextTheme(current.theme) }));
   }, []);
+
+  const setRailWidth = useCallback(
+    (width: number) => setPrefs((current) => ({ ...current, railWidth: clampRailWidth(width) })),
+    [],
+  );
+
+  const setInspectorWidth = useCallback(
+    (width: number) =>
+      setPrefs((current) => ({ ...current, inspectorWidth: clampInspectorWidth(width) })),
+    [],
+  );
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -715,7 +802,7 @@ export function App() {
       },
       {
         id: 'theme',
-        label: `Switch to ${prefs.theme === 'night' ? 'parchment' : 'night'} theme`,
+        label: `Switch to the ${THEME_LABEL[nextTheme(prefs.theme)]} palette`,
         group: 'View',
         run: toggleTheme,
       },
@@ -763,32 +850,52 @@ export function App() {
   const workspace = init.workspace;
   const activeSession = sessions.find((session) => session.id === workspace?.sessionId) ?? null;
   const activeProvider = init.providers.find((provider) => provider.id === init.model.provider);
-  const used = activeSession?.totalTokens ?? 0;
+
+  const frameStyle = {
+    '--rail-w': `${prefs.railWidth}px`,
+    '--inspector-w': `${prefs.inspectorWidth}px`,
+  } as CSSProperties;
+  const showRail = Boolean(workspace) && prefs.railOpen;
+  const showInspector = Boolean(workspace) && prefs.inspectorOpen;
 
   return (
     <div
-      className={`app${workspace && prefs.railOpen ? '' : ' rail-closed'}${
-        workspace && prefs.inspectorOpen ? '' : ' inspector-closed'
-      }`}
+      className={`app${showRail ? '' : ' rail-closed'}${showInspector ? '' : ' inspector-closed'}`}
+      style={frameStyle}
     >
-      {workspace && prefs.railOpen ? (
+      {showRail ? (
         <Sidebar
           version={init.version}
           workspace={workspace}
+          recents={init.recents}
           sessions={sessions}
-          activeSessionId={workspace.sessionId}
+          activeSessionId={workspace?.sessionId ?? null}
           running={running}
+          pendingApprovals={approvals.length}
           mcpStatus={init.mcpStatus}
           onNewSession={() => void newSession()}
           onOpenSession={(id) => void openSession(id)}
           onRenameSession={(id, title) => void renameSession(id, title)}
           onDeleteSession={(id) => void deleteSession(id)}
           onOpenWorkspace={() => void openWorkspace()}
+          onOpenRecent={(path) => void openFolder(path)}
           onDiagnostics={() => {
             openInspector('context');
             void runDoctorChecks();
           }}
           onClose={toggleRail}
+        />
+      ) : null}
+
+      {showRail ? (
+        <Splitter
+          edge="rail"
+          value={prefs.railWidth}
+          min={RAIL_RANGE[0]}
+          max={RAIL_RANGE[1]}
+          label="Resize sessions panel"
+          onResize={setRailWidth}
+          onReset={() => setRailWidth(RAIL_RESET)}
         />
       ) : null}
 
@@ -804,6 +911,17 @@ export function App() {
               onToggleInspector={toggleInspector}
               onToggleTheme={toggleTheme}
               onOpenPalette={() => setPaletteOpen(true)}
+            />
+
+            <HeatBar
+              running={running}
+              providerLabel={activeProvider?.label ?? init.model.provider}
+              modelId={init.model.modelId}
+              mode={init.mode}
+              startedAt={startedAt}
+              costUsd={activeSession?.costUsd ?? 0}
+              tokens={activeSession?.totalTokens ?? 0}
+              pendingApprovals={approvals.length}
             />
 
             {error ? (
@@ -873,8 +991,7 @@ export function App() {
                 loadFiles={loadFiles}
                 focusToken={focusToken}
                 init={init}
-                used={used}
-                maxContext={activeProvider?.maxContext ?? 0}
+                context={context}
                 modelMenuSignal={modelMenuSignal}
                 modeMenuSignal={modeMenuSignal}
                 onSetModel={(model) => void changeModel(model)}
@@ -902,11 +1019,23 @@ export function App() {
         )}
       </div>
 
-      {workspace && prefs.inspectorOpen ? (
+      {showInspector ? (
+        <Splitter
+          edge="inspector"
+          value={prefs.inspectorWidth}
+          min={INSPECTOR_RANGE[0]}
+          max={INSPECTOR_RANGE[1]}
+          label="Resize inspector panel"
+          onResize={setInspectorWidth}
+          onReset={() => setInspectorWidth(INSPECTOR_RESET)}
+        />
+      ) : null}
+
+      {showInspector ? (
         <Inspector
           init={init}
           session={activeSession}
-          used={used}
+          context={context}
           lastUsage={lastUsage}
           changes={changes}
           tab={inspectorTab}

@@ -4,6 +4,8 @@ import { z } from 'zod';
 
 const StateSchema = z.object({
   lastWorkspace: z.string().optional(),
+  /** Workspaces opened recently, most recent first. */
+  recents: z.array(z.string()).max(20).optional(),
 });
 
 export type DesktopState = z.infer<typeof StateSchema>;

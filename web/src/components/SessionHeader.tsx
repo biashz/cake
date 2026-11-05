@@ -1,7 +1,9 @@
 import { formatCost } from '../../../src/core/cost.js';
 import type { SessionInfo } from '../../../src/desktop/api.js';
-import type { ThemeName } from '../prefs';
-import { Icon } from './Icons';
+import { nextTheme, THEME_LABEL, type ThemeName } from '../prefs';
+import { Icon, type IconName } from './Icons';
+
+const NEXT_ICON: Record<ThemeName, IconName> = { flour: 'sun', cocoa: 'moon', auto: 'contrast' };
 
 export function SessionHeader({
   session,
@@ -65,11 +67,11 @@ export function SessionHeader({
         <button
           type="button"
           className="icon-button"
-          aria-label="Toggle theme"
-          title={theme === 'night' ? 'Switch to parchment' : 'Switch to night'}
+          aria-label="Change palette"
+          title={`Switch to the ${THEME_LABEL[nextTheme(theme)]} palette`}
           onClick={onToggleTheme}
         >
-          <Icon name={theme === 'night' ? 'sun' : 'moon'} />
+          <Icon name={NEXT_ICON[nextTheme(theme)]} />
         </button>
         <button
           type="button"

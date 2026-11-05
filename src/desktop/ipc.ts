@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AgentEvent } from '../core/events.js';
 import type {
+  ContextPayload,
   DoctorReportPayload,
   InitPayload,
   PermissionDecisionName,
@@ -26,6 +27,7 @@ export interface DesktopBackend {
   reloadMcp(): Promise<InitPayload>;
   listFiles(query: string): Promise<string[]>;
   runDoctor(): Promise<DoctorReportPayload>;
+  contextLayers(): ContextPayload;
 }
 
 export const workspaceOpenSchema = z.object({
@@ -106,6 +108,7 @@ export function createHandlers(backend: DesktopBackend): Record<string, Handler>
     'mcp:reload': async () => backend.reloadMcp(),
     'files:list': async (payload) => backend.listFiles(validate(filesSchema, payload ?? {}).query),
     'doctor:run': async () => backend.runDoctor(),
+    'context:layers': async () => backend.contextLayers(),
   };
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatCost } from '../../../src/core/cost.js';
 import type {
+  ContextPayload,
   DoctorReportPayload,
   InitPayload,
   SessionInfo,
@@ -8,6 +9,7 @@ import type {
 } from '../../../src/desktop/api.js';
 import { changeStats, type FileChange } from '../changes';
 import { Icon } from './Icons';
+import { SliceBlock } from './Slice';
 import { DiffView } from './ToolCard';
 
 export type InspectorTab = 'changes' | 'context' | 'files';
@@ -102,7 +104,7 @@ function ChangesPanel({ changes }: { changes: FileChange[] }) {
 export function Inspector({
   init,
   session,
-  used,
+  context,
   lastUsage,
   changes,
   tab,
@@ -116,7 +118,7 @@ export function Inspector({
 }: {
   init: InitPayload;
   session: SessionInfo | null;
-  used: number;
+  context: ContextPayload | null;
   lastUsage: TokenTotals | null;
   changes: FileChange[];
   tab: InspectorTab;
@@ -131,7 +133,6 @@ export function Inspector({
   const [fileQuery, setFileQuery] = useState('');
   const [files, setFiles] = useState<string[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
-  const activeProvider = init.providers.find((item) => item.id === init.model.provider);
 
   useEffect(() => {
     if (tab !== 'files') return;
@@ -152,11 +153,6 @@ export function Inspector({
       clearTimeout(timer);
     };
   }, [tab, fileQuery]);
-
-  const contextPercent =
-    activeProvider && activeProvider.maxContext > 0
-      ? Math.round(Math.min(used / activeProvider.maxContext, 1) * 100)
-      : 0;
 
   const doctorFails = useMemo(
     () => doctor?.checks.filter((check) => check.status === 'fail').length ?? 0,
@@ -200,6 +196,14 @@ export function Inspector({
         {tab === 'context' ? (
           <div className="context-panel">
             <section className="inspect-section">
+              <div className="section-heading-row">
+                <h3 className="inspect-heading">Context layers</h3>
+                <span className="inspect-hint mono">est.</span>
+              </div>
+              <SliceBlock context={context} />
+            </section>
+
+            <section className="inspect-section">
               <h3 className="inspect-heading">Usage</h3>
               <dl className="stat-grid">
                 <div>
@@ -219,10 +223,8 @@ export function Inspector({
                   </dd>
                 </div>
                 <div>
-                  <dt>Context window</dt>
-                  <dd className="mono">
-                    {contextPercent}% of {tokenLabel(activeProvider?.maxContext ?? 0)}
-                  </dd>
+                  <dt>Free left</dt>
+                  <dd className="mono">{tokenLabel(context?.free ?? 0)}</dd>
                 </div>
               </dl>
             </section>

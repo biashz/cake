@@ -31,18 +31,35 @@ export async function findAgentsFiles(cwd: string): Promise<string[]> {
   return found;
 }
 
-export async function loadProjectInstructions(cwd: string): Promise<string | undefined> {
-  const files = await findAgentsFiles(cwd);
-  if (files.length === 0) return undefined;
+export interface ProjectSection {
+  path: string;
+  text: string;
+}
 
-  const sections: string[] = [];
+/** AGENTS.md files as label/content sections, outermost first, capped in total. */
+export async function loadProjectSections(cwd: string): Promise<ProjectSection[]> {
+  const files = await findAgentsFiles(cwd);
+  const sections: ProjectSection[] = [];
+  let budget = MAX_INSTRUCTIONS_BYTES;
   for (const file of files) {
     const content = (await readFile(file, 'utf8')).trim();
     if (!content) continue;
-    sections.push(`## ${path.relative(cwd, file) || 'AGENTS.md'}\n${content}`);
+    const text = content.slice(0, budget);
+    if (!text) break;
+    sections.push({ path: relativeLabel(file, cwd), text });
+    budget -= text.length;
   }
+  return sections;
+}
+
+function relativeLabel(file: string, cwd: string): string {
+  return path.relative(cwd, file) || 'AGENTS.md';
+}
+
+export async function loadProjectInstructions(cwd: string): Promise<string | undefined> {
+  const sections = await loadProjectSections(cwd);
   if (sections.length === 0) return undefined;
-  return sections.join('\n\n').slice(0, MAX_INSTRUCTIONS_BYTES);
+  return sections.map((section) => `## ${section.path}\n${section.text}`).join('\n\n');
 }
 
 export interface SystemPromptOptions {
@@ -63,7 +80,12 @@ export function estimateTokens(messages: ModelMessage[]): number {
   return Math.ceil(JSON.stringify(messages).length / 4);
 }
 
-function contentText(content: unknown): string {
+/** Tokens for plain text on the same ~4 chars/token basis as estimateTokens. */
+export function estimateTextTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+export function contentText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content

@@ -33,6 +33,7 @@ const api: CakeApi = {
   reloadMcp: () => ipcRenderer.invoke('mcp:reload'),
   listFiles: (query) => ipcRenderer.invoke('files:list', { query }),
   runDoctor: () => ipcRenderer.invoke('doctor:run'),
+  contextLayers: () => ipcRenderer.invoke('context:layers'),
 
   onAgentEvent: subscribe('agent:event'),
   onAgentNote: subscribe('agent:note'),

@@ -61,9 +61,35 @@ export interface SessionPayload {
   messages: ModelMessage[];
 }
 
+export type ContextLayerId = 'system' | 'project' | 'retrieved' | 'history' | 'turn';
+
+export interface ContextEntryPayload {
+  label: string;
+  detail?: string;
+  tokens: number;
+}
+
+export interface ContextLayerPayload {
+  id: ContextLayerId;
+  label: string;
+  tokens: number;
+  entries: ContextEntryPayload[];
+}
+
+export interface ContextPayload {
+  layers: ContextLayerPayload[];
+  maxContext: number;
+  used: number;
+  free: number;
+  /** Layers are measured at ~4 characters per token, not with a real tokenizer. */
+  estimated: true;
+}
+
 export interface InitPayload {
   version: string;
   workspace: WorkspaceInfo | null;
+  /** Recently opened workspaces, most recent first. */
+  recents: string[];
   providers: ProviderSummary[];
   model: ModelHandle;
   mode: PermissionModeName;
@@ -129,6 +155,8 @@ export interface CakeApi {
   reloadMcp(): Promise<InitPayload>;
   listFiles(query: string): Promise<string[]>;
   runDoctor(): Promise<DoctorReportPayload>;
+  /** Composition of the context window, layer by layer, for the Slice. */
+  contextLayers(): Promise<ContextPayload>;
 
   onAgentEvent(handler: (event: unknown) => void): () => void;
   onAgentNote(handler: (note: AgentNotePayload) => void): () => void;

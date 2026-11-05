@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { formatCost } from '../../../src/core/cost.js';
 import type { McpStatus, SessionInfo } from '../../../src/desktop/api.js';
 import { Icon } from './Icons';
 
@@ -27,12 +28,6 @@ function relativeTime(updatedAt: number, now = Date.now()): string {
   return new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function shortTokens(tokens: number): string {
-  if (tokens < 1000) return `${tokens}`;
-  if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}k`;
-  return `${(tokens / 1_000_000).toFixed(1)}M`;
-}
-
 function basename(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
   return normalized.split(/[\\/]/).pop() || normalized;
@@ -41,29 +36,35 @@ function basename(path: string): string {
 export function Sidebar({
   version,
   workspace,
+  recents,
   sessions,
   activeSessionId,
   running,
+  pendingApprovals,
   mcpStatus,
   onNewSession,
   onOpenSession,
   onRenameSession,
   onDeleteSession,
   onOpenWorkspace,
+  onOpenRecent,
   onDiagnostics,
   onClose,
 }: {
   version: string;
   workspace: { cwd: string; sessionId: string } | null;
+  recents: string[];
   sessions: SessionInfo[];
   activeSessionId: string | null;
   running: boolean;
+  pendingApprovals: number;
   mcpStatus: McpStatus;
   onNewSession: () => void;
   onOpenSession: (id: string) => void;
   onRenameSession: (id: string, title: string) => void;
   onDeleteSession: (id: string) => void;
   onOpenWorkspace: () => void;
+  onOpenRecent: (path: string) => void;
   onDiagnostics: () => void;
   onClose?: () => void;
 }) {
@@ -71,7 +72,9 @@ export function Sidebar({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [recentsOpen, setRecentsOpen] = useState(false);
   const renameRef = useRef<HTMLInputElement>(null);
+  const otherRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!editingId) return;
@@ -86,6 +89,22 @@ export function Sidebar({
     const timer = setTimeout(() => setConfirmId(null), 3000);
     return () => clearTimeout(timer);
   }, [confirmId]);
+
+  useEffect(() => {
+    if (!recentsOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!otherRef.current?.contains(event.target as Node)) setRecentsOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setRecentsOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [recentsOpen]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -146,25 +165,64 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <button
-        type="button"
-        className="workspace-switcher"
-        onClick={onOpenWorkspace}
-        title={workspace?.cwd ?? 'Choose a workspace folder'}
-      >
-        <Icon name="folder" size={15} />
-        <span className="workspace-copy">
-          <span className="workspace-name">
-            {workspace ? basename(workspace.cwd) : 'No workspace'}
+      <div className="workspace-block" ref={otherRef}>
+        <button
+          type="button"
+          className="workspace-switcher"
+          onClick={onOpenWorkspace}
+          title={workspace?.cwd ?? 'Choose a workspace folder'}
+        >
+          <Icon name="folder" size={15} />
+          <span className="workspace-copy">
+            <span className="workspace-name">
+              {workspace ? basename(workspace.cwd) : 'No workspace'}
+            </span>
+            <span className="workspace-path mono">
+              {workspace ? workspace.cwd : 'Open a folder to begin'}
+            </span>
           </span>
-          <span className="workspace-path mono">
-            {workspace ? workspace.cwd : 'Open a folder to begin'}
-          </span>
-        </span>
-        <span className="workspace-change">
-          <Icon name="chevron-right" size={13} />
-        </span>
-      </button>
+        </button>
+        {recents.length > 0 ? (
+          <button
+            type="button"
+            className="workspace-recent-toggle"
+            aria-expanded={recentsOpen}
+            aria-haspopup="menu"
+            onClick={() => setRecentsOpen((open) => !open)}
+          >
+            <Icon name="clock" size={13} />
+            <span className="sr-only">Recent workspaces</span>
+          </button>
+        ) : null}
+        {recentsOpen ? (
+          <div className="workspace-menu" role="menu" aria-label="Recent workspaces">
+            <p className="rail-label">Recent</p>
+            {recents.map((path) => (
+              <button
+                key={path}
+                type="button"
+                role="menuitem"
+                className={`workspace-menu-item${path === workspace?.cwd ? ' is-current' : ''}`}
+                onClick={() => {
+                  setRecentsOpen(false);
+                  if (path !== workspace?.cwd) onOpenRecent(path);
+                }}
+              >
+                <span className="workspace-menu-name">{basename(path)}</span>
+                <span className="workspace-menu-path mono">{path}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              role="menuitem"
+              className="workspace-menu-item"
+              onClick={onOpenWorkspace}
+            >
+              <span className="workspace-menu-name">Open another folder…</span>
+            </button>
+          </div>
+        ) : null}
+      </div>
 
       <button
         type="button"
@@ -232,17 +290,28 @@ export function Sidebar({
                         type="button"
                         className="session-main"
                         onClick={() => onOpenSession(session.id)}
-                        disabled={running}
+                        disabled={running && !active}
                         aria-current={active ? 'true' : undefined}
                       >
-                        <span className="session-layer" aria-hidden="true" />
+                        <span
+                          className={`session-dot${
+                            active && running
+                              ? ' is-running'
+                              : active && pendingApprovals > 0
+                                ? ' is-waiting'
+                                : active
+                                  ? ' is-active'
+                                  : ''
+                          }`}
+                          aria-hidden="true"
+                        />
                         <span className="session-copy">
                           <span className="session-title">
                             {session.title || 'Untitled session'}
                           </span>
                           <span className="session-meta mono">
                             {session.model} · {relativeTime(session.updatedAt)} ·{' '}
-                            {shortTokens(session.totalTokens)} tok
+                            {formatCost(session.costUsd)}
                           </span>
                         </span>
                       </button>
