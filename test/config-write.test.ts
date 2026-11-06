@@ -1,9 +1,16 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config/config.js';
-import { setPricingEntry, updateProjectConfig } from '../src/config/write.js';
+import { setPricingEntry, setProviderApiKey, updateProjectConfig } from '../src/config/write.js';
 
 function workspace(): string {
   return mkdtempSync(join(tmpdir(), 'cake-write-'));
@@ -105,6 +112,63 @@ describe('updateProjectConfig', () => {
     const cwd = workspace();
     await updateProjectConfig(cwd, (config) => ({ ...config, provider: 'deepseek' }));
     expect(readFileSync(projectFile(cwd), 'utf8').endsWith('}\n')).toBe(true);
+  });
+});
+
+describe('setProviderApiKey', () => {
+  it('writes the key to the global config, not the workspace', async () => {
+    const home = workspace();
+    const cwd = workspace();
+
+    const file = await setProviderApiKey(home, 'anthropic', ' sk-ant-1 ');
+
+    expect(file).toBe(join(home, '.cake', 'config.json'));
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
+      providers: { anthropic: { apiKey: 'sk-ant-1' } },
+    });
+    expect(existsSync(projectFile(cwd))).toBe(false);
+    expect(loadConfig({ cwd, homeDir: home, env: {} }).providers.anthropic?.apiKey).toBe(
+      'sk-ant-1',
+    );
+  });
+
+  it('adds the key to an existing provider entry without losing its other fields', async () => {
+    const home = workspace();
+    seed(home, {
+      model: 'claude-sonnet-4-5',
+      providers: { anthropic: { baseURL: 'https://proxy.internal/v1' } },
+      customFlag: { keep: true },
+    });
+
+    await setProviderApiKey(home, 'anthropic', 'sk-ant-2');
+
+    expect(JSON.parse(readFileSync(projectFile(home), 'utf8'))).toEqual({
+      model: 'claude-sonnet-4-5',
+      providers: { anthropic: { baseURL: 'https://proxy.internal/v1', apiKey: 'sk-ant-2' } },
+      customFlag: { keep: true },
+    });
+  });
+
+  it('refuses a blank key and leaves no file behind', async () => {
+    const home = workspace();
+    await expect(setProviderApiKey(home, 'openai', '   ')).rejects.toThrow(/cannot be empty/);
+    expect(existsSync(join(home, '.cake', 'config.json'))).toBe(false);
+  });
+
+  it('refuses a provider the config schema has no room for', async () => {
+    const home = workspace();
+    await expect(setProviderApiKey(home, 'gemini', 'x')).rejects.toThrow(/Unknown provider/);
+    expect(existsSync(join(home, '.cake', 'config.json'))).toBe(false);
+  });
+
+  it('leaves an unreadable global config exactly as it was', async () => {
+    const home = workspace();
+    const broken = '{ "providers": ';
+    mkdirSync(join(home, '.cake'), { recursive: true });
+    writeFileSync(projectFile(home), broken);
+
+    await expect(setProviderApiKey(home, 'deepseek', 'x')).rejects.toThrow(/invalid JSON/i);
+    expect(readFileSync(projectFile(home), 'utf8')).toBe(broken);
   });
 });
 

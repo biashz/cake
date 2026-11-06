@@ -72,3 +72,44 @@ export async function setPricingEntry(
     return config;
   });
 }
+
+/** The config schema names these three and has no room for others. */
+const PROVIDER_IDS = ['deepseek', 'anthropic', 'openai'] as const;
+export type ProviderId = (typeof PROVIDER_IDS)[number];
+
+function knownProvider(value: string): ProviderId {
+  const found = PROVIDER_IDS.find((id) => id === value);
+  if (!found)
+    throw new Error(`Unknown provider "${value}"; expected one of ${PROVIDER_IDS.join(', ')}`);
+  return found;
+}
+
+/**
+ * Store a provider key in the global config, where it works for every workspace
+ * and cannot be committed by accident. Keys the file already holds survive.
+ */
+export async function setProviderApiKey(
+  homeDir: string | undefined,
+  provider: string,
+  apiKey: string,
+): Promise<string> {
+  const id = knownProvider(provider);
+  const key = apiKey.trim();
+  if (!key) throw new Error('An API key cannot be empty');
+  return updateJsonFile(configPaths(undefined, homeDir).global, (config) => {
+    const providers =
+      typeof config.providers === 'object' &&
+      config.providers !== null &&
+      !Array.isArray(config.providers)
+        ? (config.providers as ConfigRecord)
+        : {};
+    const entry =
+      typeof providers[id] === 'object' && providers[id] !== null && !Array.isArray(providers[id])
+        ? (providers[id] as ConfigRecord)
+        : {};
+    entry.apiKey = key;
+    providers[id] = entry;
+    config.providers = providers;
+    return config;
+  });
+}

@@ -3,7 +3,9 @@ import type { AgentEvent } from '../core/events.js';
 import type { Pricing } from '../core/pricing.js';
 import type {
   ContextPayload,
+  DoctorFileTargetName,
   DoctorReportPayload,
+  DoctorStoreTargetName,
   InitPayload,
   McpDraft,
   PermissionDecisionName,
@@ -44,6 +46,10 @@ export interface DesktopBackend {
   setMcpEnabled(scope: RuleScopeName, name: string, enabled: boolean): Promise<InitPayload>;
   listFiles(query: string): Promise<string[]>;
   runDoctor(): Promise<DoctorReportPayload>;
+  setProviderKey(provider: string, key: string): Promise<InitPayload>;
+  rebuildIndex(): Promise<string>;
+  openDoctorFile(target: DoctorFileTargetName): Promise<string>;
+  revealDoctorStore(target: DoctorStoreTargetName): Promise<string>;
   contextLayers(): ContextPayload;
 }
 
@@ -132,6 +138,23 @@ const mcpEnabledSchema = z.object({
   enabled: z.boolean(),
 });
 
+/** Only these names cross IPC, so a fix can never ask for an arbitrary path. */
+const doctorFileTargetSchema = z.enum([
+  'config-project',
+  'config-global',
+  'mcp-project',
+  'mcp-global',
+  'settings-project',
+  'settings-global',
+]);
+
+const doctorStoreTargetSchema = z.enum(['sessions', 'index']);
+
+const providerKeySchema = z.object({
+  provider: z.string().min(1).max(64),
+  key: z.string().min(1).max(4096),
+});
+
 function validate<T>(schema: z.ZodType<T>, payload: unknown): T {
   const result = schema.safeParse(payload);
   if (!result.success) {
@@ -196,6 +219,15 @@ export function createHandlers(backend: DesktopBackend): Record<string, Handler>
     },
     'files:list': async (payload) => backend.listFiles(validate(filesSchema, payload ?? {}).query),
     'doctor:run': async () => backend.runDoctor(),
+    'doctor:key': async (payload) => {
+      const { provider, key } = validate(providerKeySchema, payload);
+      return backend.setProviderKey(provider, key);
+    },
+    'doctor:reindex': async () => backend.rebuildIndex(),
+    'doctor:open': async (payload) =>
+      backend.openDoctorFile(validate(doctorFileTargetSchema, payload)),
+    'doctor:reveal': async (payload) =>
+      backend.revealDoctorStore(validate(doctorStoreTargetSchema, payload)),
     'context:layers': async () => backend.contextLayers(),
   };
 }

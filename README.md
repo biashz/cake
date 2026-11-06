@@ -192,6 +192,7 @@ Electron 窗口是三栏布局：左侧会话栏（搜索 / 重命名 / 删除�
 - 顶部保留命令面板、夜间 / 羊皮纸主题（默认羊皮纸浅色，选择会记住）与 inspector 开关
 - `Ctrl K` 命令面板，`Ctrl N` 新会话，`Ctrl B` 折叠会话栏，`Ctrl J` 折叠 inspector
 - 输入框支持 `/` 命令（`/help`、`/model`、`/mode`、`/files`、`/mcp`、`/doctor`、`/cost`、`/new`）和 `@` 文件补全
+- inspector 的 Diagnostics 不只报告问题：每条警告 / 失败都带一个可执行动作——粘贴 provider 密钥（写入 `~/.cake/config.json` 并立刻重建 provider 注册表与 embedding）、重建代码索引、重连 MCP、打开对应配置文件（文件缺失时先写入合法空模板）、在文件管理器中定位会话库或索引库；动作完成后自动重跑检查。CLI 的 `--doctor` 仍只读，不改动任何东西
 - 窄窗口下会话栏与 inspector 变为浮层，一次只显示一个
 
 ## 打包二进制

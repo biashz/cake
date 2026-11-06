@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
 import { VERSION } from '../version.js';
 import { WorkspaceController } from './controller.js';
 import { createHandlers, parseWorkspacePath } from './ipc.js';
@@ -70,6 +70,8 @@ app.whenReady().then(async () => {
         mainWindow.webContents.send(channel, payload);
       }
     },
+    openFile: (file) => shell.openPath(file),
+    revealFile: (file) => shell.showItemInFolder(file),
   });
 
   for (const [channel, handler] of Object.entries(createHandlers(controller))) {

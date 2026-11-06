@@ -194,10 +194,32 @@ export interface RunResult {
 
 export type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 
+/** A config file a fix can open; only these names cross IPC, never a path. */
+export type DoctorFileTargetName =
+  | 'config-project'
+  | 'config-global'
+  | 'mcp-project'
+  | 'mcp-global'
+  | 'settings-project'
+  | 'settings-global';
+
+/** A SQLite file a fix can only reveal in the file manager. */
+export type DoctorStoreTargetName = 'sessions' | 'index';
+
+export type DoctorFixPayload =
+  | { kind: 'set-key'; provider: string; envVar: string }
+  | { kind: 'reindex' }
+  | { kind: 'reload-mcp' }
+  | { kind: 'open-workspace' }
+  | { kind: 'open-file'; target: DoctorFileTargetName }
+  | { kind: 'reveal'; target: DoctorStoreTargetName };
+
 export interface DoctorCheckPayload {
   label: string;
   status: DoctorCheckStatus;
   detail: string;
+  /** What the app can do about it; absent when the fix lives outside cake. */
+  fix?: DoctorFixPayload;
 }
 
 export interface DoctorReportPayload {
@@ -264,6 +286,14 @@ export interface CakeApi {
   setMcpEnabled(scope: RuleScopeName, name: string, enabled: boolean): Promise<InitPayload>;
   listFiles(query: string): Promise<string[]>;
   runDoctor(): Promise<DoctorReportPayload>;
+  /** Store a provider key in the global config and reconnect that provider. */
+  setProviderKey(provider: string, key: string): Promise<InitPayload>;
+  /** Build or refresh the semantic index for the open workspace. */
+  rebuildIndex(): Promise<string>;
+  /** Open one of cake's own config files, creating it when nothing is there yet. */
+  openDoctorFile(target: DoctorFileTargetName): Promise<string>;
+  /** Show one of cake's SQLite stores in the file manager. */
+  revealDoctorStore(target: DoctorStoreTargetName): Promise<string>;
   /** Composition of the context window, layer by layer, for the Slice. */
   contextLayers(): Promise<ContextPayload>;
 

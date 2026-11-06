@@ -83,3 +83,99 @@ describe('runDoctor', () => {
     expect(find(report, 'MCP servers')?.status).toBe('fail');
   });
 });
+
+describe('runDoctor fixes', () => {
+  it('points a missing provider key at the key it needs', async () => {
+    const report = await runDoctor({ cwd, homeDir: home, env: {} });
+    expect(find(report, 'deepseek API key')?.fix).toEqual({
+      kind: 'set-key',
+      provider: 'deepseek',
+      envVar: 'DEEPSEEK_API_KEY',
+    });
+    expect(find(report, 'semantic search')?.fix).toEqual({
+      kind: 'set-key',
+      provider: 'openai',
+      envVar: 'OPENAI_API_KEY',
+    });
+
+    const configured = await runDoctor({
+      cwd,
+      homeDir: home,
+      env: { ANTHROPIC_API_KEY: 'a' },
+    });
+    expect(find(configured, 'anthropic API key')?.fix).toBeUndefined();
+  });
+
+  it('offers to build the index when embeddings are ready and reveal it when broken', async () => {
+    const unindexed = await runDoctor({
+      cwd,
+      homeDir: home,
+      env: { OPENAI_API_KEY: 'b', ANTHROPIC_API_KEY: 'a' },
+    });
+    expect(find(unindexed, 'code index')?.fix).toEqual({ kind: 'reindex' });
+
+    const withoutKey = await runDoctor({ cwd, homeDir: home, env: {} });
+    expect(find(withoutKey, 'code index')?.fix).toEqual({
+      kind: 'set-key',
+      provider: 'openai',
+      envVar: 'OPENAI_API_KEY',
+    });
+  });
+
+  it('has no index fix until a workspace is open', async () => {
+    const report = await runDoctor({
+      cwd,
+      homeDir: home,
+      env: { OPENAI_API_KEY: 'b' },
+      hasWorkspace: false,
+    });
+    expect(find(report, 'code index')?.fix).toEqual({ kind: 'open-workspace' });
+  });
+
+  it('reload is the fix once servers exist, and opening the file is the fix while none do', async () => {
+    const empty = await runDoctor({ cwd, homeDir: home, env: {} });
+    expect(find(empty, 'MCP servers')?.fix).toEqual({ kind: 'open-file', target: 'mcp-project' });
+
+    await mkdir(path.join(cwd, '.cake'), { recursive: true });
+    await writeFile(
+      path.join(cwd, '.cake', 'mcp.json'),
+      JSON.stringify({ mcpServers: { docs: { command: 'node', args: ['server.mjs'] } } }),
+      'utf8',
+    );
+    const live = await runDoctor({ cwd, homeDir: home, env: {} });
+    expect(find(live, 'MCP servers')?.fix).toEqual({ kind: 'reload-mcp' });
+  });
+
+  it('opens the file that actually holds the broken config', async () => {
+    await mkdir(path.join(cwd, '.cake'), { recursive: true });
+    await writeFile(
+      path.join(cwd, '.cake', 'mcp.json'),
+      JSON.stringify({ mcpServers: { broken: { command: '' } } }),
+      'utf8',
+    );
+    const projectFirst = await runDoctor({ cwd, homeDir: home, env: {} });
+    expect(find(projectFirst, 'MCP servers')?.fix).toEqual({
+      kind: 'open-file',
+      target: 'mcp-project',
+    });
+
+    await rm(path.join(cwd, '.cake', 'mcp.json'));
+    await mkdir(path.join(home, '.cake'), { recursive: true });
+    await writeFile(path.join(home, '.cake', 'mcp.json'), '{ broken', 'utf8');
+    const globalOnly = await runDoctor({ cwd, homeDir: home, env: {} });
+    expect(find(globalOnly, 'MCP servers')?.fix).toEqual({
+      kind: 'open-file',
+      target: 'mcp-global',
+    });
+  });
+
+  it('points a broken settings file at the settings file', async () => {
+    await mkdir(path.join(cwd, '.cake'), { recursive: true });
+    await writeFile(path.join(cwd, '.cake', 'settings.json'), '{ nope', 'utf8');
+    const report = await runDoctor({ cwd, homeDir: home, env: {} });
+    expect(find(report, 'permission settings')?.fix).toEqual({
+      kind: 'open-file',
+      target: 'settings-project',
+    });
+  });
+});

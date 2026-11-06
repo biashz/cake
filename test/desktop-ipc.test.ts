@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   ContextPayload,
   CostPayload,
+  DoctorFileTargetName,
   DoctorReportPayload,
+  DoctorStoreTargetName,
   InitPayload,
   McpStatus,
   RulesPayload,
@@ -141,6 +143,10 @@ function backend(): DesktopBackend {
     setMcpEnabled: vi.fn(async () => initPayload),
     listFiles: vi.fn(async () => ['src/a.ts']),
     runDoctor: vi.fn(async () => doctorReport),
+    setProviderKey: vi.fn(async () => initPayload),
+    rebuildIndex: vi.fn(async () => 'Indexed 12 chunks from 3 files.'),
+    openDoctorFile: vi.fn(async (target: DoctorFileTargetName) => `opened:${target}`),
+    revealDoctorStore: vi.fn(async (target: DoctorStoreTargetName) => `revealed:${target}`),
     contextLayers: vi.fn(() => contextPayload),
   };
 }
@@ -164,6 +170,60 @@ describe('desktop IPC handlers', () => {
     expect(await handlers['doctor:run']?.(undefined)).toEqual(doctorReport);
     expect(await handlers['context:layers']?.(undefined)).toEqual(contextPayload);
     expect(fake.runDoctor).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts every declared doctor file target', async () => {
+    const handlers = createHandlers(backend());
+    const targets: DoctorFileTargetName[] = [
+      'config-project',
+      'config-global',
+      'mcp-project',
+      'mcp-global',
+      'settings-project',
+      'settings-global',
+    ];
+    for (const target of targets) {
+      expect(await handlers['doctor:open']?.(target)).toBe(`opened:${target}`);
+    }
+    const stores: DoctorStoreTargetName[] = ['sessions', 'index'];
+    for (const target of stores) {
+      expect(await handlers['doctor:reveal']?.(target)).toBe(`revealed:${target}`);
+    }
+  });
+
+  it('refuses a doctor file target that is not one of the named configs', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+
+    for (const payload of ['../../etc/passwd', 'config-project/../../x', undefined, 42]) {
+      await expect(handlers['doctor:open']?.(payload)).rejects.toThrow(/Invalid payload/);
+    }
+    await expect(handlers['doctor:reveal']?.('sessions.db')).rejects.toThrow(/Invalid payload/);
+    expect(fake.openDoctorFile).not.toHaveBeenCalled();
+    expect(fake.revealDoctorStore).not.toHaveBeenCalled();
+  });
+
+  it('stores a provider key through the backend and rejects an empty one', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+
+    expect(await handlers['doctor:key']?.({ provider: 'anthropic', key: 'sk-ant-1' })).toEqual(
+      initPayload,
+    );
+    expect(fake.setProviderKey).toHaveBeenCalledWith('anthropic', 'sk-ant-1');
+    await expect(handlers['doctor:key']?.({ provider: 'anthropic', key: '' })).rejects.toThrow(
+      'Invalid key',
+    );
+    await expect(handlers['doctor:key']?.({ provider: '', key: 'x' })).rejects.toThrow(
+      'Invalid provider',
+    );
+    expect(fake.setProviderKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds the index on request', async () => {
+    const fake = backend();
+    expect(await createHandlers(fake)['doctor:reindex']?.(undefined)).toContain('Indexed');
+    expect(fake.rebuildIndex).toHaveBeenCalledTimes(1);
   });
 
   it('validates agent:run payloads before touching the backend', async () => {

@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import fg from 'fast-glob';
 import { configPaths, loadConfig } from '../config/config.js';
-import { setPricingEntry } from '../config/write.js';
+import { setPricingEntry, setProviderApiKey } from '../config/write.js';
 import {
   buildSystemPrompt,
   estimateTextTokens,
@@ -16,6 +16,7 @@ import {
   resolvePricing,
 } from '../core/pricing.js';
 import { runDoctor as diagnose } from '../diagnostics/doctor.js';
+import { doctorStorePath, ensureDoctorFile } from '../diagnostics/fixes.js';
 import { type McpBundle, type McpServerStatus, openMcpServers } from '../mcp/client.js';
 import { mcpConfigPaths } from '../mcp/config.js';
 import {
@@ -41,6 +42,8 @@ import {
 import { createDefaultRegistry, type ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
 import type { Embedder } from '../rag/embedder.js';
+import { CodeIndexStore, defaultIndexFile } from '../rag/index-store.js';
+import { indexCodebase } from '../rag/indexer.js';
 import { buildToolCatalog, resolveEmbedder } from '../runtime/toolset.js';
 import { runTurn } from '../runtime/turn.js';
 import { defaultSessionFile, type SessionMeta, SessionStore } from '../session/store.js';
@@ -56,7 +59,9 @@ import type {
   ContextEntryPayload,
   ContextPayload,
   CostPayload,
+  DoctorFileTargetName,
   DoctorReportPayload,
+  DoctorStoreTargetName,
   InitPayload,
   McpDraft,
   McpStatus,
@@ -77,6 +82,11 @@ const IGNORED_GLOBS = ['.git/**', 'node_modules/**', '.cake/**', 'dist/**', 'rel
 const FILE_RESULT_LIMIT = 50;
 const RECENT_LIMIT = 8;
 
+/** The file-launching deps come from Electron; without them the fix cannot run. */
+function unavailable(): never {
+  throw new Error('Opening files is only available in the desktop app');
+}
+
 export interface ControllerDeps {
   /** `userData/state.json` in production; a temp file in tests. */
   stateFile: string;
@@ -84,6 +94,10 @@ export interface ControllerDeps {
   send(channel: string, payload: unknown): void;
   env?: Record<string, string | undefined>;
   homeDir?: string;
+  /** Opens a file in the user's editor; Electron passes `shell.openPath`. */
+  openFile?: (file: string) => Promise<string>;
+  /** Shows a file in the file manager; Electron passes `shell.showItemInFolder`. */
+  revealFile?: (file: string) => void;
 }
 
 interface ActiveWorkspace {
@@ -110,12 +124,14 @@ interface ActiveWorkspace {
  * here, so all agent behavior stays identical to the CLI.
  */
 export class WorkspaceController implements DesktopBackend {
-  private readonly registry: ProviderRegistry;
-  private readonly config: ReturnType<typeof loadConfig>;
+  private registry: ProviderRegistry;
+  private config: ReturnType<typeof loadConfig>;
   private readonly env: Record<string, string | undefined>;
   private readonly homeDir: string | undefined;
   private readonly stateFile: string;
   private readonly send: (channel: string, payload: unknown) => void;
+  private readonly openFile: (file: string) => Promise<string>;
+  private readonly revealFile: (file: string) => void;
 
   private active: ActiveWorkspace | undefined;
   /** Global settings, used for the panel until a workspace is open. */
@@ -136,6 +152,8 @@ export class WorkspaceController implements DesktopBackend {
     this.send = deps.send;
     this.env = deps.env ?? (process.env as Record<string, string | undefined>);
     this.homeDir = deps.homeDir;
+    this.openFile = deps.openFile ?? (async () => unavailable());
+    this.revealFile = deps.revealFile ?? (() => unavailable());
     this.config = loadConfig({ env: this.env, homeDir: deps.homeDir });
     this.registry = createDefaultRegistry(this.config, this.env);
   }
@@ -468,7 +486,68 @@ export class WorkspaceController implements DesktopBackend {
       cwd: this.active?.cwd ?? process.cwd(),
       homeDir: this.homeDir,
       env: this.env,
+      hasWorkspace: Boolean(this.active),
     });
+  }
+
+  /**
+   * Store a key in the global config, then rebuild the registry so the next turn
+   * — and the index — can actually use it.
+   */
+  async setProviderKey(provider: string, key: string): Promise<InitPayload> {
+    await setProviderApiKey(this.homeDir, provider, key);
+    this.reloadProviders();
+    return this.snapshot();
+  }
+
+  /** Build or refresh the semantic index, reporting progress as agent notes. */
+  async rebuildIndex(): Promise<string> {
+    const active = this.requireActive();
+    if (!active.embedder) {
+      throw new Error('Indexing needs embeddings; set an OpenAI key first');
+    }
+    if (this.busy) throw new Error('Cannot rebuild the index while a turn is running');
+    const store = CodeIndexStore.open(defaultIndexFile(active.cwd));
+    try {
+      const summary = await indexCodebase({
+        cwd: active.cwd,
+        store,
+        embedder: active.embedder,
+        onProgress: (message) => this.send('agent:note', { kind: 'index', text: message }),
+      });
+      const truncated = summary.truncated ? ' (chunk cap reached; some files skipped)' : '';
+      return `Indexed ${summary.chunks} chunks from ${summary.indexedFiles} files${truncated}.`;
+    } finally {
+      store.close();
+    }
+  }
+
+  /** Open a config file, creating an empty valid one when the check found nothing. */
+  async openDoctorFile(target: DoctorFileTargetName): Promise<string> {
+    const file = await ensureDoctorFile(target, {
+      cwd: this.active?.cwd ?? process.cwd(),
+      homeDir: this.homeDir,
+    });
+    const failure = await this.openFile(file);
+    if (failure) throw new Error(`Could not open ${file}: ${failure}`);
+    return file;
+  }
+
+  /** A SQLite store is not editable as text, so the fix only shows it in the file manager. */
+  async revealDoctorStore(target: DoctorStoreTargetName): Promise<string> {
+    const file = doctorStorePath(target, {
+      cwd: this.requireActive().cwd,
+      homeDir: this.homeDir,
+    });
+    this.revealFile(file);
+    return file;
+  }
+
+  /** Re-read the global config after a key change; providers hold their key at build time. */
+  private reloadProviders(): void {
+    this.config = loadConfig({ env: this.env, homeDir: this.homeDir });
+    this.registry = createDefaultRegistry(this.config, this.env);
+    if (this.active) this.active.embedder = resolveEmbedder(this.registry);
   }
 
   async dispose(): Promise<void> {

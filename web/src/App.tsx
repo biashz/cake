@@ -3,6 +3,7 @@ import { formatCost } from '../../src/core/cost.js';
 import type { Pricing } from '../../src/core/pricing.js';
 import type {
   ContextPayload,
+  DoctorFixPayload,
   DoctorReportPayload,
   InitPayload,
   McpDraft,
@@ -549,6 +550,40 @@ export function App() {
       setDoctorBusy(false);
     }
   }, []);
+
+  /**
+   * Do the action a diagnostics row offered, then run the checks again: a fix
+   * that did not land cannot report itself as done.
+   */
+  const applyDoctorFix = useCallback(
+    async (fix: DoctorFixPayload, value?: string) => {
+      const api = window.cake;
+      if (!api) return;
+      try {
+        if (fix.kind === 'open-workspace') {
+          await openWorkspace();
+          return;
+        }
+        if (fix.kind === 'set-key' && value) {
+          setInit(await api.setProviderKey(fix.provider, value));
+          await refreshContext();
+        } else if (fix.kind === 'reload-mcp') {
+          setInit(await api.reloadMcp());
+        } else if (fix.kind === 'reindex') {
+          addEntry({ role: 'note', kind: 'index', text: await api.rebuildIndex() });
+          await refreshContext();
+        } else if (fix.kind === 'open-file') {
+          await api.openDoctorFile(fix.target);
+        } else if (fix.kind === 'reveal') {
+          await api.revealDoctorStore(fix.target);
+        }
+        setDoctor(await api.runDoctor());
+      } catch (err) {
+        setError(message(err));
+      }
+    },
+    [addEntry, openWorkspace, refreshContext],
+  );
 
   const openInspector = useCallback((tab?: InspectorTab) => {
     setPrefs((current) => ({
@@ -1110,8 +1145,8 @@ export function App() {
               <div className="notice mono">
                 <span className="notice-dot" />
                 <span>
-                  No API key for {init.missingKeys.join(', ')} — set{' '}
-                  {init.missingKeys.map((id) => `${id.toUpperCase()}_API_KEY`).join(' / ')}.
+                  No API key for {init.missingKeys.join(', ')} — cake cannot call those models
+                  without one.
                 </span>
                 <button
                   type="button"
@@ -1121,7 +1156,7 @@ export function App() {
                     void runDoctorChecks();
                   }}
                 >
-                  Diagnostics
+                  Add a key
                 </button>
               </div>
             ) : null}
@@ -1213,6 +1248,7 @@ export function App() {
           onTab={setInspectorTab}
           onClose={toggleInspector}
           onRunDoctor={() => void runDoctorChecks()}
+          onApplyFix={applyDoctorFix}
           onReloadMcp={reloadMcp}
           onSetMcpServer={setMcpServer}
           onToggleMcpServer={toggleMcpServer}

@@ -2862,12 +2862,64 @@ button.stop:hover:not(:disabled) {
   color: var(--bad);
 }
 
+.doctor-summary.is-warn {
+  color: var(--warn);
+}
+
 .doctor-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 2px 7px;
   align-items: center;
   padding: 5px 2px;
+}
+
+/* a pasted key needs the full width, so it gets its own line under the detail */
+.doctor-row.is-key {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.doctor-action {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.doctor-row.is-key .doctor-action {
+  grid-column: 2;
+  grid-row: 3;
+  justify-content: flex-start;
+}
+
+.doctor-fix {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.doctor-key {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-deep);
+  color: var(--text-soft);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.doctor-key:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.doctor-key:disabled {
+  color: var(--faint);
 }
 
 .doctor-label {

@@ -5,6 +5,7 @@ import type { Pricing } from '../../../src/core/pricing.js';
 import type {
   ContextPayload,
   CostPayload,
+  DoctorFixPayload,
   DoctorReportPayload,
   InitPayload,
   McpDraft,
@@ -945,6 +946,96 @@ export function CostPanel({
   );
 }
 
+/** What a fix button says: each one names what pressing it does. */
+function fixLabel(fix: DoctorFixPayload): string {
+  switch (fix.kind) {
+    case 'reindex':
+      return 'Rebuild index';
+    case 'reload-mcp':
+      return 'Reconnect servers';
+    case 'open-workspace':
+      return 'Open a workspace';
+    case 'open-file':
+      if (fix.target.startsWith('mcp')) return 'Open MCP config';
+      if (fix.target.startsWith('settings')) return 'Open rules';
+      return 'Open config';
+    case 'reveal':
+      return fix.target === 'sessions' ? 'Show sessions' : 'Show index';
+    case 'set-key':
+      return 'Save key';
+  }
+}
+
+/**
+ * One row's action. The busy state is local so two rows offering the same kind of
+ * fix — keys for two providers, say — do not light up together.
+ */
+export function FixControl({
+  fix,
+  onApply,
+}: {
+  fix: DoctorFixPayload;
+  onApply: (fix: DoctorFixPayload, value?: string) => Promise<void>;
+}) {
+  const [pending, setPending] = useState(false);
+  const [key, setKey] = useState('');
+
+  const run = async (value?: string) => {
+    setPending(true);
+    try {
+      await onApply(fix, value);
+      setKey('');
+    } finally {
+      setPending(false);
+    }
+  };
+
+  if (fix.kind === 'set-key') {
+    return (
+      <form
+        className="doctor-fix"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const trimmed = key.trim();
+          if (trimmed) void run(trimmed);
+        }}
+      >
+        <input
+          type="password"
+          className="doctor-key"
+          value={key}
+          placeholder={fix.envVar}
+          aria-label={`${fix.provider} API key`}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(event) => setKey(event.target.value)}
+          disabled={pending}
+        />
+        <button
+          type="submit"
+          className="text-button"
+          data-testid={`fix-${fix.provider}`}
+          disabled={pending || key.trim() === ''}
+        >
+          {pending ? 'Saving…' : fixLabel(fix)}
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="text-button doctor-fix"
+      data-testid={`fix-${fix.kind}`}
+      disabled={pending}
+      onClick={() => void run()}
+    >
+      {pending ? 'Working…' : fixLabel(fix)}
+    </button>
+  );
+}
+
 export function Inspector({
   init,
   session,
@@ -958,6 +1049,7 @@ export function Inspector({
   onTab,
   onClose,
   onRunDoctor,
+  onApplyFix,
   onReloadMcp,
   onSetMcpServer,
   onToggleMcpServer,
@@ -979,6 +1071,7 @@ export function Inspector({
   onTab: (tab: InspectorTab) => void;
   onClose: () => void;
   onRunDoctor: () => void;
+  onApplyFix: (fix: DoctorFixPayload, value?: string) => Promise<void>;
   onReloadMcp: () => Promise<void>;
   onSetMcpServer: (scope: RuleScopeName, draft: McpDraft) => Promise<void>;
   onToggleMcpServer: (scope: RuleScopeName, name: string, enabled: boolean) => Promise<void>;
@@ -1024,6 +1117,10 @@ export function Inspector({
 
   const doctorFails = useMemo(
     () => doctor?.checks.filter((check) => check.status === 'fail').length ?? 0,
+    [doctor],
+  );
+  const doctorWarns = useMemo(
+    () => doctor?.checks.filter((check) => check.status === 'warn').length ?? 0,
     [doctor],
   );
 
@@ -1144,19 +1241,35 @@ export function Inspector({
               </div>
               {doctor ? (
                 <>
-                  <p className={`doctor-summary ${doctor.ok ? 'is-ok' : 'is-bad'}`}>
+                  <p
+                    className={`doctor-summary ${
+                      doctor.ok ? (doctorWarns > 0 ? 'is-warn' : 'is-ok') : 'is-bad'
+                    }`}
+                  >
                     {doctor.ok
-                      ? 'Environment is ready.'
-                      : `${doctorFails} check${doctorFails === 1 ? '' : 's'} failed.`}
+                      ? doctorWarns > 0
+                        ? `${doctorWarns} check${doctorWarns === 1 ? '' : 's'} you can fix.`
+                        : 'Environment is ready.'
+                      : `${doctorFails} check${doctorFails === 1 ? '' : 's'} failed${
+                          doctorWarns > 0 ? `, ${doctorWarns} to fix` : ''
+                        }.`}
                   </p>
                   <ul className="doctor-list">
                     {doctor.checks.map((check) => (
-                      <li key={check.label} className="doctor-row">
+                      <li
+                        key={check.label}
+                        className={`doctor-row${check.fix?.kind === 'set-key' ? ' is-key' : ''}`}
+                      >
                         <span className={`status-dot is-${check.status}`} />
                         <span className="doctor-label">{check.label}</span>
                         <span className="doctor-detail mono" title={check.detail}>
                           {check.detail}
                         </span>
+                        {check.fix ? (
+                          <span className="doctor-action">
+                            <FixControl fix={check.fix} onApply={onApplyFix} />
+                          </span>
+                        ) : null}
                       </li>
                     ))}
                   </ul>
@@ -1164,7 +1277,7 @@ export function Inspector({
               ) : (
                 <p className="inspect-hint">
                   Check Node, provider keys, config, MCP, sessions, and the code index without
-                  calling a model.
+                  calling a model. Every warning comes with the action that clears it.
                 </p>
               )}
             </section>

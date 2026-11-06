@@ -42,6 +42,10 @@ const api: CakeApi = {
     ipcRenderer.invoke('mcp:enabled', { scope, name, enabled }),
   listFiles: (query) => ipcRenderer.invoke('files:list', { query }),
   runDoctor: () => ipcRenderer.invoke('doctor:run'),
+  setProviderKey: (provider, key) => ipcRenderer.invoke('doctor:key', { provider, key }),
+  rebuildIndex: () => ipcRenderer.invoke('doctor:reindex'),
+  openDoctorFile: (target) => ipcRenderer.invoke('doctor:open', target),
+  revealDoctorStore: (target) => ipcRenderer.invoke('doctor:reveal', target),
   contextLayers: () => ipcRenderer.invoke('context:layers'),
 
   onAgentEvent: subscribe('agent:event'),

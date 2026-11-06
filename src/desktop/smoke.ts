@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import type { InitPayload } from './api.js';
 import { WorkspaceController } from './controller.js';
 import { createHandlers } from './ipc.js';
@@ -16,6 +16,8 @@ async function main(): Promise<void> {
   const controller = new WorkspaceController({
     stateFile: path.join(workspace, 'state.json'),
     send: () => {},
+    openFile: (file) => shell.openPath(file),
+    revealFile: (file) => shell.showItemInFolder(file),
   });
 
   try {

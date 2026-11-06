@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   CostPayload,
+  DoctorFixPayload,
   McpDraft,
   McpServerRow,
   McpStatus,
@@ -11,7 +12,13 @@ import type {
 } from '../src/desktop/api.js';
 import { ApprovalCard } from '../web/src/components/ApprovalCard';
 import { Composer } from '../web/src/components/Composer';
-import { CostPanel, McpSection, PlanPanel, RulesSection } from '../web/src/components/Inspector';
+import {
+  CostPanel,
+  FixControl,
+  McpSection,
+  PlanPanel,
+  RulesSection,
+} from '../web/src/components/Inspector';
 import { Sidebar } from '../web/src/components/Sidebar';
 import { ToolCard } from '../web/src/components/ToolCard';
 import { Transcript } from '../web/src/components/Transcript';
@@ -895,5 +902,90 @@ describe('Sidebar', () => {
   it('stays quiet when every server is live', () => {
     rail([rowOf('files')]);
     expect(screen.getByTestId('mcp-line').textContent).toBe('MCP 1 live · 2 tools');
+  });
+});
+
+describe('FixControl', () => {
+  it('names the action each fix performs and asks for exactly that', async () => {
+    const fixes: Array<[DoctorFixPayload, string]> = [
+      [{ kind: 'reindex' }, 'Rebuild index'],
+      [{ kind: 'reload-mcp' }, 'Reconnect servers'],
+      [{ kind: 'open-workspace' }, 'Open a workspace'],
+      [{ kind: 'open-file', target: 'mcp-global' }, 'Open MCP config'],
+      [{ kind: 'open-file', target: 'settings-project' }, 'Open rules'],
+      [{ kind: 'open-file', target: 'config-global' }, 'Open config'],
+      [{ kind: 'reveal', target: 'sessions' }, 'Show sessions'],
+      [{ kind: 'reveal', target: 'index' }, 'Show index'],
+    ];
+    for (const [fix, label] of fixes) {
+      cleanup();
+      const onApply = vi.fn(async () => {});
+      render(<FixControl fix={fix} onApply={onApply} />);
+      const button = screen.getByRole('button', { name: label });
+      fireEvent.click(button);
+      await act(async () => {});
+      expect(onApply).toHaveBeenCalledWith(fix, undefined);
+    }
+  });
+
+  it('holds the key off the button until something is typed', async () => {
+    const fix: DoctorFixPayload = { kind: 'set-key', provider: 'openai', envVar: 'OPENAI_API_KEY' };
+    const onApply = vi.fn(async () => {});
+    render(<FixControl fix={fix} onApply={onApply} />);
+
+    const field = screen.getByLabelText('openai API key');
+    const save = screen.getByRole('button', { name: 'Save key' });
+    expect(field.getAttribute('type')).toBe('password');
+    expect(field.getAttribute('placeholder')).toBe('OPENAI_API_KEY');
+    expect(save.hasAttribute('disabled')).toBe(true);
+
+    fireEvent.change(field, { target: { value: 'sk-test' } });
+    expect(save.hasAttribute('disabled')).toBe(false);
+    await act(async () => {
+      fireEvent.click(save);
+    });
+
+    expect(onApply).toHaveBeenCalledWith(fix, 'sk-test');
+    expect((field as HTMLInputElement).value).toBe('');
+  });
+
+  it('refuses to submit a key that is only spaces', () => {
+    const fix: DoctorFixPayload = {
+      kind: 'set-key',
+      provider: 'anthropic',
+      envVar: 'ANTHROPIC_API_KEY',
+    };
+    const onApply = vi.fn(async () => {});
+    render(<FixControl fix={fix} onApply={onApply} />);
+
+    fireEvent.change(screen.getByLabelText('anthropic API key'), { target: { value: '   ' } });
+    expect(screen.getByRole('button', { name: 'Save key' }).hasAttribute('disabled')).toBe(true);
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
+  it('says it is working while a fix runs and ignores a second press', async () => {
+    let release: () => void = () => {};
+    const fix: DoctorFixPayload = { kind: 'reindex' };
+    const onApply = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    render(<FixControl fix={fix} onApply={onApply} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild index' }));
+    expect(onApply).toHaveBeenCalledTimes(1);
+    const busy = screen.getByRole('button', { name: 'Working…' });
+    expect(busy.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(busy);
+    expect(onApply).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release();
+    });
+    expect(screen.getByRole('button', { name: 'Rebuild index' }).hasAttribute('disabled')).toBe(
+      false,
+    );
   });
 });
