@@ -147,6 +147,21 @@ export async function startMockAnthropic(): Promise<MockAnthropic> {
       } catch {
         body = {};
       }
+
+      // Same port, OpenAI shape: lets a spec give cake embeddings without a real key.
+      if (String(request.url ?? '').endsWith('/embeddings')) {
+        const input = body.input;
+        const texts = Array.isArray(input) ? input.map(String) : [String(input ?? '')];
+        const data = texts.map((text, index) => ({
+          object: 'embedding',
+          index,
+          embedding: Array.from({ length: 8 }, (_, slot) => (text.charCodeAt(slot) || slot) / 64),
+        }));
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ object: 'list', model: 'text-embedding-3-small', data }));
+        return;
+      }
+
       const messages = messagesOf(body);
       const toolResult = hasToolResult(messages);
       requests.push({

@@ -362,7 +362,9 @@ export function App() {
     if (!api) return;
     const offs = [
       api.onAgentEvent(handleEvent),
-      api.onAgentNote((note) => addEntry({ role: 'note', kind: note.kind, text: note.text })),
+      api.onAgentNote((note) =>
+        addEntry({ role: 'note', kind: note.kind, text: note.text, hits: note.hits }),
+      ),
       api.onPermissionRequest((request) => setApprovals((list) => [...list, request])),
       api.onMcpStatus((status) =>
         setInit((current) => (current ? { ...current, mcpStatus: status } : current)),
@@ -1216,7 +1218,7 @@ export function App() {
             ))}
 
             <main className="conversation">
-              <Transcript entries={entries} streaming={streaming} />
+              <Transcript entries={entries} streaming={streaming} onInsertFile={insertFile} />
 
               {approvals.length > 0 ? (
                 <div className="approvals" data-testid="approvals">

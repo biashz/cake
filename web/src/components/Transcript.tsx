@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
+import type { CodebaseHit } from '../../../src/rag/retrieval.js';
 import { buildTurns, type Entry, previewValue, type ToolInfo, type Turn } from '../transcript';
 import { Icon } from './Icons';
 import { ToolCard } from './ToolCard';
@@ -48,12 +49,66 @@ function Bubble({
   );
 }
 
-function Note({ text, kind }: { text: string; kind?: string }) {
+/** Why a hit was chosen, in the words the card shows instead of a bare number. */
+const VIA_LABEL: Record<CodebaseHit['via'], string> = {
+  both: 'meaning + keywords',
+  semantic: 'meaning',
+  lexical: 'keywords',
+};
+
+/**
+ * The chunks that actually went into the prompt. Each card is a handle: clicking it
+ * puts `@path` in the composer, so a good hit is one keystroke away from a follow-up.
+ */
+function HitCards({
+  hits,
+  onInsertFile,
+}: {
+  hits: CodebaseHit[];
+  onInsertFile: (path: string) => void;
+}) {
   return (
-    <div className="entry-note" data-testid="entry-note">
-      {kind ? <span className="entry-note-kind mono">{kind}</span> : null}
-      <span className="entry-note-text">{text}</span>
+    <div className="hit-cards" data-testid="hit-cards">
+      {hits.map((hit) => (
+        <button
+          type="button"
+          key={`${hit.path}:${hit.startLine}-${hit.endLine}`}
+          className="hit-card"
+          data-testid="codebase-hit"
+          title={`Attach @${hit.path} to the prompt`}
+          onClick={() => onInsertFile(hit.path)}
+        >
+          <span className="hit-path mono">{hit.path}</span>
+          <span className="hit-lines mono">
+            {hit.startLine}–{hit.endLine}
+          </span>
+          <span className="hit-via">{VIA_LABEL[hit.via]}</span>
+          <span className="hit-score mono">{hit.score.toFixed(2)}</span>
+        </button>
+      ))}
     </div>
+  );
+}
+
+function Note({
+  text,
+  kind,
+  hits,
+  onInsertFile,
+}: {
+  text: string;
+  kind?: string;
+  hits?: CodebaseHit[];
+  onInsertFile: (path: string) => void;
+}) {
+  return (
+    <>
+      <div className="entry-note" data-testid="entry-note">
+        {kind ? <span className="entry-note-kind mono">{kind}</span> : null}
+        <span className="entry-note-text">{text}</span>
+      </div>
+      {hits && hits.length > 0 ? <HitCards hits={hits} onInsertFile={onInsertFile} /> : null}
+    </>
   );
 }
 
@@ -118,6 +173,7 @@ function bodyNodes(
   body: Entry[],
   copy: (id: number, text: string) => void,
   copiedId: number | null,
+  onInsertFile: (path: string) => void,
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   let index = 0;
@@ -140,7 +196,15 @@ function bodyNodes(
     }
 
     if (entry.role === 'info' || entry.role === 'note') {
-      nodes.push(<Note key={entry.id} text={entry.text ?? ''} kind={entry.kind} />);
+      nodes.push(
+        <Note
+          key={entry.id}
+          text={entry.text ?? ''}
+          kind={entry.kind}
+          hits={entry.hits}
+          onInsertFile={onInsertFile}
+        />,
+      );
     } else if (entry.role === 'error') {
       nodes.push(
         <div key={entry.id} className="entry-error" data-testid="entry-error">
@@ -191,6 +255,7 @@ function TurnCard({
   onToggle,
   copy,
   copiedId,
+  onInsertFile,
 }: {
   turn: Turn;
   number: number;
@@ -198,6 +263,7 @@ function TurnCard({
   onToggle: () => void;
   copy: (id: number, text: string) => void;
   copiedId: number | null;
+  onInsertFile: (path: string) => void;
 }) {
   const prompt = turn.user?.text ?? '';
   const summary = stats(turn);
@@ -215,12 +281,22 @@ function TurnCard({
           {open ? '▾' : '▸'}
         </span>
       </button>
-      {open ? <div className="turn-body">{bodyNodes(turn.body, copy, copiedId)}</div> : null}
+      {open ? (
+        <div className="turn-body">{bodyNodes(turn.body, copy, copiedId, onInsertFile)}</div>
+      ) : null}
     </section>
   );
 }
 
-export function Transcript({ entries, streaming }: { entries: Entry[]; streaming: string }) {
+export function Transcript({
+  entries,
+  streaming,
+  onInsertFile,
+}: {
+  entries: Entry[];
+  streaming: string;
+  onInsertFile: (path: string) => void;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
   const [copied, setCopied] = useState<number | null>(null);
@@ -290,6 +366,7 @@ export function Transcript({ entries, streaming }: { entries: Entry[]; streaming
             onToggle={() => toggle(turn.key)}
             copy={copy}
             copiedId={copied}
+            onInsertFile={onInsertFile}
           />
         ))}
         {streaming ? <Bubble text={streaming} live /> : null}

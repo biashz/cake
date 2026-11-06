@@ -1654,6 +1654,51 @@ body.is-resizing {
   overflow-wrap: anywhere;
 }
 
+/* Codebase hit cards: the chunks that were read, and a handle to quote one back. */
+.hit-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 52px;
+  margin-top: 6px;
+}
+
+.hit-card {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  max-width: 100%;
+  padding: 4px 7px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 10.5px;
+  color: var(--text-soft);
+}
+
+.hit-card:hover {
+  background: var(--panel-2);
+}
+
+.hit-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+  color: var(--text);
+}
+
+.hit-lines,
+.hit-score {
+  color: var(--faint);
+}
+
+.hit-via {
+  color: var(--muted);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+}
+
 .entry-error {
   padding-left: 52px;
   color: var(--bad);

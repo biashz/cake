@@ -342,4 +342,46 @@ describe('runTurn', () => {
       'assistant',
     ]);
   });
+
+  it('carries the retrieved chunks on the codebase note', async () => {
+    await writeFile(
+      path.join(cwd, 'alpha.ts'),
+      'export function alphaHandler() {\n  return "alpha";\n}\n',
+      'utf8',
+    );
+    const model = new MockLanguageModelV4({ doStream: [textStream('ok')] });
+    const notes: TurnNote[] = [];
+    const { ctx } = context();
+
+    await runTurn({
+      cwd,
+      registry: registryFor(model),
+      model: MODEL,
+      system: 'sys',
+      mode: 'default',
+      rules: { allow: [], deny: [] },
+      tools: [],
+      history: [],
+      prompt: 'where is @codebase alphaHandler defined?',
+      maxContext: 200_000,
+      ctx,
+      embedder: {
+        id: 'fake-a',
+        async embed(texts) {
+          return texts.map((text) => (text.includes('alpha') ? [1, 0, 0] : [0, 1, 0]));
+        },
+      },
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+      onNote: (note) => notes.push(note),
+    });
+
+    // The renderer builds hit cards from this note, so the chunks must travel on it.
+    const codebase = notes.find((note) => note.kind === 'codebase' && note.hits !== undefined);
+    expect(codebase?.hits?.[0]?.path).toBe('alpha.ts');
+    expect(codebase?.text).toMatch(/^attached \d+ chunks?$/);
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt ?? []);
+    expect(prompt).toContain('<codebase query=');
+    expect(prompt).toContain('alphaHandler');
+  });
 });

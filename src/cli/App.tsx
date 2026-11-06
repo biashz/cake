@@ -293,7 +293,16 @@ export function App(props: AppProps) {
         ctx,
         abortSignal: controller.signal,
         onEvent: handleEvent,
-        onNote: (note) => addEntry({ role: 'info', text: `${note.kind}: ${note.text}` }),
+        onNote: (note) =>
+          addEntry({
+            role: 'info',
+            // The terminal has no cards, so the files it used read as one line.
+            text: `${note.kind}: ${note.text}${
+              note.hits && note.hits.length > 0
+                ? ` (${note.hits.map((hit) => `${hit.path}:${hit.startLine}`).join(', ')})`
+                : ''
+            }`,
+          }),
       });
 
       historyRef.current = result.messages;

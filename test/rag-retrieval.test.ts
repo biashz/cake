@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ChunkRecord } from '../src/rag/index-store.js';
-import { formatResults, mergeResults, tokenize } from '../src/rag/retrieval.js';
+import {
+  formatResults,
+  mergeResults,
+  type RankedChunk,
+  toHits,
+  tokenize,
+} from '../src/rag/retrieval.js';
 
 const chunks: ChunkRecord[] = [
   {
@@ -54,6 +60,32 @@ describe('mergeResults', () => {
     const [hit] = mergeResults(chunks, 'unrelatedValue', new Map(), 5);
     expect(hit?.chunk.id).toBe(2);
     expect(hit?.lexical).toBeDefined();
+  });
+});
+
+function ranked(over: Omit<RankedChunk, 'chunk'>): RankedChunk {
+  return { chunk: chunks[0] as ChunkRecord, ...over };
+}
+
+describe('toHits', () => {
+  it('names how each hit matched, so a card reads as meaning or keywords', () => {
+    const [meaningOnly, keywordsOnly, both] = toHits([
+      ranked({ score: 0.9, semantic: 0.9 }),
+      ranked({ score: 0.4, lexical: 0.4 }),
+      ranked({ score: 0.95, semantic: 0.9, lexical: 0.4 }),
+    ]);
+    expect(meaningOnly?.via).toBe('semantic');
+    expect(keywordsOnly?.via).toBe('lexical');
+    expect(both?.via).toBe('both');
+  });
+
+  it('treats a zero lexical score as no keyword match', () => {
+    expect(toHits([ranked({ score: 0.9, semantic: 0.9, lexical: 0 })])[0]?.via).toBe('semantic');
+  });
+
+  it('carries the location and a display-rounded score', () => {
+    const [hit] = toHits([ranked({ score: 0.81234, semantic: 0.9 })]);
+    expect(hit).toMatchObject({ path: 'src/a.ts', startLine: 1, endLine: 3, score: 0.81 });
   });
 });
 

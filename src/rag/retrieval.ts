@@ -34,6 +34,32 @@ export interface RankedChunk {
   lexical?: number;
 }
 
+/**
+ * One retrieved chunk in the shape a view can render: where it came from and why
+ * it was chosen. The index itself never reaches the renderer.
+ */
+export interface CodebaseHit {
+  path: string;
+  startLine: number;
+  endLine: number;
+  kind: string;
+  /** Blended rank, rounded for display; two hits at 0.81 read as equally good. */
+  score: number;
+  /** How it matched, so a card says 'meaning' or 'keywords' instead of a bare number. */
+  via: 'semantic' | 'lexical' | 'both';
+}
+
+export function toHits(results: RankedChunk[]): CodebaseHit[] {
+  return results.map(({ chunk, score, semantic, lexical }) => ({
+    path: chunk.path,
+    startLine: chunk.startLine,
+    endLine: chunk.endLine,
+    kind: chunk.kind,
+    score: Math.round(score * 100) / 100,
+    via: semantic === undefined ? 'lexical' : (lexical ?? 0) > 0 ? 'both' : 'semantic',
+  }));
+}
+
 export interface SearchOptions {
   cwd: string;
   store: CodeIndexStore;

@@ -92,7 +92,11 @@ describe('@codebase mention', () => {
       embedder: fakeEmbedder(),
     });
 
-    expect(result.results).toBeGreaterThan(0);
+    expect(result.hits.length).toBeGreaterThan(0);
+    // Everything a hit card renders, from the kernel side.
+    expect(result.hits[0]).toMatchObject({ path: 'alpha.ts', startLine: 1 });
+    expect(typeof result.hits[0]?.score).toBe('number');
+    expect(['semantic', 'lexical', 'both']).toContain(result.hits[0]?.via);
     expect(result.text.startsWith('where is')).toBe(true);
     expect(result.text).toContain('<codebase query="where is alphaHandler defined?">');
     expect(result.text).toContain('alpha.ts');
@@ -102,16 +106,16 @@ describe('@codebase mention', () => {
   it('explains when embeddings are unavailable or the query is empty', async () => {
     const cwd = await workspace();
     const withoutEmbedder = await expandCodebaseMention('find @codebase stuff', { cwd });
-    expect(withoutEmbedder.results).toBe(0);
+    expect(withoutEmbedder.hits).toEqual([]);
     expect(withoutEmbedder.note).toContain('no embedding provider');
 
     const emptyQuery = await expandCodebaseMention('@codebase', { cwd, embedder: fakeEmbedder() });
-    expect(emptyQuery.results).toBe(0);
+    expect(emptyQuery.hits).toEqual([]);
     expect(emptyQuery.note).toContain('needs a query');
   });
 
   it('leaves prompts without the mention untouched', async () => {
     const result = await expandCodebaseMention('hello world', { cwd: process.cwd() });
-    expect(result).toEqual({ text: 'hello world', results: 0 });
+    expect(result).toEqual({ text: 'hello world', hits: [] });
   });
 });

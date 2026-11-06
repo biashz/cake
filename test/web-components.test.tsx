@@ -575,6 +575,7 @@ describe('Transcript', () => {
           { id: 2, role: 'error', text: 'boom' },
         ]}
         streaming="partial"
+        onInsertFile={vi.fn()}
       />,
     );
 
@@ -611,6 +612,7 @@ describe('Transcript', () => {
           { id: 3, role: 'assistant', text: 'done', at: 1_300 },
         ]}
         streaming=""
+        onInsertFile={vi.fn()}
       />,
     );
 
@@ -638,6 +640,7 @@ describe('Transcript', () => {
           { id: 2, role: 'user', text: 'second' },
         ]}
         streaming=""
+        onInsertFile={vi.fn()}
       />,
     );
 
@@ -680,6 +683,7 @@ describe('Transcript', () => {
           },
         ]}
         streaming=""
+        onInsertFile={vi.fn()}
       />,
     );
 
@@ -688,6 +692,70 @@ describe('Transcript', () => {
     expect(branch.textContent).toContain('a.ts');
     // The child lives in the branch, not as a sibling card.
     expect(screen.getAllByTestId('tool-card')).toHaveLength(1);
+  });
+
+  it('renders a codebase note as cards that quote the file back', () => {
+    const onInsertFile = vi.fn();
+    render(
+      <Transcript
+        entries={[
+          { id: 0, role: 'user', text: 'where is auth checked?' },
+          {
+            id: 1,
+            role: 'note',
+            kind: 'codebase',
+            text: 'attached 2 chunks',
+            hits: [
+              {
+                path: 'src/auth.ts',
+                startLine: 12,
+                endLine: 40,
+                kind: 'function_declaration',
+                score: 0.91,
+                via: 'both',
+              },
+              {
+                path: 'src/session.ts',
+                startLine: 3,
+                endLine: 9,
+                kind: 'class_declaration',
+                score: 0.62,
+                via: 'lexical',
+              },
+            ],
+          },
+        ]}
+        streaming=""
+        onInsertFile={onInsertFile}
+      />,
+    );
+
+    const cards = screen.getAllByTestId('codebase-hit');
+    expect(cards).toHaveLength(2);
+    expect(cards[0]?.textContent).toContain('src/auth.ts');
+    expect(cards[0]?.textContent).toContain('12–40');
+    expect(cards[0]?.textContent).toContain('meaning + keywords');
+    expect(cards[1]?.textContent).toContain('keywords');
+    expect(cards[1]?.textContent).toContain('0.62');
+
+    fireEvent.click(cards[1] as HTMLElement);
+    expect(onInsertFile).toHaveBeenCalledWith('src/session.ts');
+  });
+
+  it('keeps a note without hits as plain text', () => {
+    render(
+      <Transcript
+        entries={[
+          { id: 0, role: 'user', text: 'hello' },
+          { id: 1, role: 'note', kind: 'codebase', text: 'no embedding provider configured' },
+        ]}
+        streaming=""
+        onInsertFile={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('entry-note').textContent).toContain('no embedding provider');
+    expect(screen.queryByTestId('codebase-hit')).toBeNull();
   });
 });
 

@@ -1,6 +1,7 @@
 import type { Embedder } from './embedder.js';
 import { CodeIndexStore, defaultIndexFile } from './index-store.js';
-import { formatResults, searchCodebase } from './retrieval.js';
+import type { CodebaseHit } from './retrieval.js';
+import { formatResults, searchCodebase, toHits } from './retrieval.js';
 
 const CODEBASE_RE = /(^|\s)@codebase\b/gi;
 
@@ -14,8 +15,8 @@ export interface CodebaseMentionOptions {
 export interface CodebaseExpansion {
   /** Input with `@codebase` stripped and the retrieved context appended. */
   text: string;
-  /** Number of code chunks injected as context. */
-  results: number;
+  /** The chunks injected as context, in the order the model was given them. */
+  hits: CodebaseHit[];
   note?: string;
 }
 
@@ -37,13 +38,12 @@ export async function expandCodebaseMention(
   options: CodebaseMentionOptions,
 ): Promise<CodebaseExpansion> {
   const query = queryFrom(input);
-  if (!hasCodebaseMention(input)) return { text: input, results: 0 };
-  if (!query)
-    return { text: query, results: 0, note: '@codebase needs a query, e.g. "where is X"' };
+  if (!hasCodebaseMention(input)) return { text: input, hits: [] };
+  if (!query) return { text: query, hits: [], note: '@codebase needs a query, e.g. "where is X"' };
   if (!options.embedder) {
     return {
       text: query,
-      results: 0,
+      hits: [],
       note: '@codebase is unavailable: no embedding provider configured',
     };
   }
@@ -62,7 +62,7 @@ export async function expandCodebaseMention(
     if (result.results.length === 0) {
       return {
         text: query,
-        results: 0,
+        hits: [],
         note: result.note ?? 'no code matched the @codebase query',
       };
     }
@@ -72,7 +72,7 @@ export async function expandCodebaseMention(
       .join('; ');
     return {
       text: `${query}\n\n${block}`,
-      results: result.results.length,
+      hits: toHits(result.results),
       ...(notes ? { note: notes } : {}),
     };
   } finally {

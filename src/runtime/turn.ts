@@ -10,14 +10,16 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
 import { expandCodebaseMention } from '../rag/codebase-mention.js';
 import type { Embedder } from '../rag/embedder.js';
+import type { CodebaseHit } from '../rag/retrieval.js';
 import { buildToolSet } from '../tools/registry.js';
 import type { CakeTool, PermissionMode, ToolContext } from '../tools/types.js';
 
-export type TurnNote =
-  | { kind: 'index'; text: string }
-  | { kind: 'codebase'; text: string }
-  | { kind: 'files'; text: string }
-  | { kind: 'context'; text: string };
+export interface TurnNote {
+  kind: 'index' | 'codebase' | 'files' | 'context';
+  text: string;
+  /** On a codebase note: the chunks actually put in front of the model, best first. */
+  hits?: CodebaseHit[];
+}
 
 export interface TurnOptions {
   cwd: string;
@@ -65,8 +67,12 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
     abortSignal,
     onProgress: (text) => note({ kind: 'index', text }),
   });
-  if (codebase.results > 0) {
-    note({ kind: 'codebase', text: `attached ${codebase.results} chunks` });
+  if (codebase.hits.length > 0) {
+    note({
+      kind: 'codebase',
+      text: `attached ${codebase.hits.length} ${codebase.hits.length === 1 ? 'chunk' : 'chunks'}`,
+      hits: codebase.hits,
+    });
   }
   if (codebase.note) note({ kind: 'codebase', text: codebase.note });
 

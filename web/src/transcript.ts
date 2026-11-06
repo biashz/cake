@@ -1,3 +1,5 @@
+import type { CodebaseHit } from '../../src/rag/retrieval.js';
+
 export type EntryRole = 'user' | 'assistant' | 'tool' | 'info' | 'note' | 'error';
 
 /**
@@ -33,6 +35,8 @@ export interface Entry {
   meta?: string;
   /** Eyebrow label for kernel notes, e.g. "index" or "context". */
   kind?: string;
+  /** On a codebase note: the chunks cake actually read, rendered as hit cards. */
+  hits?: CodebaseHit[];
   tool?: ToolInfo;
   /** Wall clock of the event, so a finished turn can report how long it took. */
   at?: number;

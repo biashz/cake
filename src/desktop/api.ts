@@ -1,6 +1,7 @@
 import type { ModelMessage } from 'ai';
 import type { CostBoard, WorkspaceSpend } from '../core/cost-board.js';
 import type { Pricing, PricingSource } from '../core/pricing.js';
+import type { CodebaseHit } from '../rag/retrieval.js';
 import type { PermissionPreview, TaskItem } from '../tools/types.js';
 
 /**
@@ -250,6 +251,8 @@ export type AgentNoteKind = 'index' | 'codebase' | 'files' | 'context';
 export interface AgentNotePayload {
   kind: AgentNoteKind;
   text: string;
+  /** On a codebase note: the chunks that went into the prompt, best first. */
+  hits?: CodebaseHit[];
 }
 
 /** The complete surface exposed on `window.cake` by the preload script. */
