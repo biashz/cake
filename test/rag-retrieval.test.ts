@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { ChunkRecord } from '../src/rag/index-store.js';
+import { type ChunkRecord, CodeIndexStore } from '../src/rag/index-store.js';
 import {
   formatResults,
   mergeResults,
   type RankedChunk,
+  searchCodebase,
   toHits,
-  tokenize,
 } from '../src/rag/retrieval.js';
+import { tokenize } from '../src/rag/terms.js';
 
 const chunks: ChunkRecord[] = [
   {
@@ -97,5 +98,76 @@ describe('formatResults', () => {
 
   it('reports an empty result set', () => {
     expect(formatResults([])).toBe('No matching code found.');
+  });
+});
+
+describe('searchCodebase candidates', () => {
+  /** A corpus big enough that scanning it and indexing it must agree, not just not crash. */
+  function corpus(extra: Array<{ path: string; text: string }>): CodeIndexStore {
+    const store = CodeIndexStore.inMemory();
+    const fillers = Array.from({ length: 60 }, (_, index) => {
+      // Insertion order deliberately differs from path order: bm25 walks rowids and
+      // the scorer walks paths, so a candidate ceiling that is too low shows up here.
+      const slot = (index * 29) % 60;
+      return {
+        path: `src/f${String(slot).padStart(3, '0')}.ts`,
+        text: 'export const configValue = 1;',
+      };
+    });
+    const files = [...extra, ...fillers];
+    files.forEach((file, index) => {
+      store.replaceFile(
+        { path: file.path, mtimeMs: index, size: 10, hash: `h${index}` },
+        [{ startLine: 1, endLine: 2, kind: 'lexical_declaration', text: file.text }],
+        [Float32Array.from([1, 0])],
+      );
+    });
+    return store;
+  }
+
+  it('ranks the same from FTS candidates as from scanning every chunk', async () => {
+    const store = corpus([
+      { path: 'src/parse.ts', text: 'function parseConfig(raw) { return raw; }' },
+    ]);
+    const query = 'parse config raw';
+
+    const scanned = mergeResults(store.allChunks(), query, new Map(), 8);
+    const indexed = await searchCodebase({
+      cwd: process.cwd(),
+      store,
+      query,
+      autoIndex: false,
+      limit: 8,
+    });
+
+    expect(scanned.length).toBe(8);
+    expect(indexed.results.map((result) => [result.chunk.path, result.score])).toEqual(
+      scanned.map((result) => [result.chunk.path, result.score]),
+    );
+    expect(indexed.results[0]?.chunk.path).toBe('src/parse.ts');
+    store.close();
+  });
+
+  it('keeps semantic hits that share no keyword with the query', async () => {
+    const store = corpus([{ path: 'src/gamma.ts', text: 'export const gammaThing = 1;' }]);
+    const indexed = await searchCodebase({
+      cwd: process.cwd(),
+      store,
+      query: 'delta',
+      autoIndex: false,
+      limit: 4,
+      embedder: {
+        id: 'flat',
+        async embed(texts) {
+          return texts.map(() => [1, 0]);
+        },
+      },
+    });
+
+    // Nothing matches 'delta' as a keyword, so only the vector candidates survive.
+    expect(indexed.semantic).toBe(true);
+    expect(indexed.results.length).toBeGreaterThan(0);
+    expect(indexed.results.every((result) => result.lexical === 0)).toBe(true);
+    store.close();
   });
 });

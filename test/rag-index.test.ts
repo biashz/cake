@@ -1,9 +1,10 @@
 import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Embedder } from '../src/rag/embedder.js';
-import { CodeIndexStore } from '../src/rag/index-store.js';
+import { CodeIndexStore, defaultIndexFile } from '../src/rag/index-store.js';
 import { indexCodebase } from '../src/rag/indexer.js';
 
 const tempDirs: string[] = [];
@@ -60,6 +61,139 @@ describe('CodeIndexStore', () => {
     store.removeFile('a.ts');
     expect(store.stats()).toEqual({ files: 0, chunks: 0 });
     store.close();
+  });
+});
+
+describe('searchTerms', () => {
+  const chunk = (text: string) => [
+    { startLine: 1, endLine: 3, kind: 'function_declaration', text },
+  ];
+
+  it('finds a chunk from a camelCase fragment it never stores whole', () => {
+    const store = CodeIndexStore.inMemory();
+    store.replaceFile(
+      { path: 'a.ts', mtimeMs: 1, size: 10, hash: 'h1' },
+      chunk('function alphaHandler() {}'),
+      undefined,
+    );
+
+    // Feeding raw source to FTS5 would index "alphahandler" and miss this query.
+    const hits = store.searchTerms(['alpha'], 8);
+    expect(hits.map((hit) => hit.path)).toEqual(['a.ts']);
+    store.close();
+  });
+
+  it('keeps the term index in step with replaces and removes', () => {
+    const store = CodeIndexStore.inMemory();
+    const file = { path: 'a.ts', mtimeMs: 1, size: 10, hash: 'h1' };
+    store.replaceFile(file, chunk('alphaOne'), undefined);
+
+    expect(store.searchTerms(['alpha'], 8)).toHaveLength(1);
+
+    store.replaceFile({ ...file, mtimeMs: 2, hash: 'h2' }, chunk('betaTwo'), undefined);
+    expect(store.searchTerms(['alpha'], 8)).toHaveLength(0);
+    expect(store.searchTerms(['beta'], 8)).toHaveLength(1);
+
+    store.removeFile('a.ts');
+    expect(store.searchTerms(['beta'], 8)).toHaveLength(0);
+    store.close();
+  });
+
+  it('returns only the chunks that share a token with the query', () => {
+    const store = CodeIndexStore.inMemory();
+    store.replaceFile(
+      { path: 'broad.ts', mtimeMs: 1, size: 10, hash: 'h1' },
+      chunk('function alphaHandler() {}'),
+      undefined,
+    );
+    store.replaceFile(
+      { path: 'apart.ts', mtimeMs: 1, size: 10, hash: 'h2' },
+      chunk('function gammaSession() {}'),
+      undefined,
+    );
+
+    expect(store.searchTerms(['alpha', 'gamma'], 8).map((hit) => hit.path)).toEqual([
+      'broad.ts',
+      'apart.ts',
+    ]);
+    expect(store.searchTerms(['handler'], 8).map((hit) => hit.path)).toEqual(['broad.ts']);
+    expect(store.searchTerms(['nothing'], 8)).toEqual([]);
+    store.close();
+  });
+});
+
+describe('term index on disk', () => {
+  const tempDirs: string[] = [];
+  afterEach(async () => {
+    for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true });
+  });
+
+  it('backfills chunks written before the term table existed', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cake-fts-migrate-'));
+    tempDirs.push(dir);
+    const file = defaultIndexFile(dir);
+
+    const store = CodeIndexStore.open(file);
+    store.replaceFile(
+      { path: 'a.ts', mtimeMs: 1, size: 10, hash: 'h1' },
+      [{ startLine: 1, endLine: 2, kind: 'function_declaration', text: 'alphaOne' }],
+      undefined,
+    );
+    store.close();
+
+    // An index database from before FTS: no term table and no marker.
+    const legacy = new DatabaseSync(file);
+    legacy.exec('DROP TABLE chunks_terms');
+    legacy.prepare("DELETE FROM meta WHERE key = 'fts.terms.v1'").run();
+    legacy.close();
+
+    const reopened = CodeIndexStore.open(file);
+    try {
+      expect(reopened.stats().chunks).toBe(1);
+      expect(reopened.searchTerms(['alpha'], 8).map((hit) => hit.path)).toEqual(['a.ts']);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it('keeps exactly one term row per live chunk', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cake-fts-hygiene-'));
+    tempDirs.push(dir);
+    const file = defaultIndexFile(dir);
+    const store = CodeIndexStore.open(file);
+    const one = (text: string) => [
+      { startLine: 1, endLine: 2, kind: 'function_declaration', text },
+    ];
+
+    store.replaceFile(
+      { path: 'a.ts', mtimeMs: 1, size: 9, hash: 'h1' },
+      one('alphaOne'),
+      undefined,
+    );
+    store.replaceFile({ path: 'b.ts', mtimeMs: 1, size: 9, hash: 'h2' }, one('betaTwo'), undefined);
+    store.replaceFile(
+      { path: 'a.ts', mtimeMs: 2, size: 9, hash: 'h3' },
+      one('gammaThree'),
+      undefined,
+    );
+    store.removeFile('b.ts');
+    store.close();
+
+    // Rows for chunks that no longer exist stay invisible to a join but keep
+    // growing the index, so they are counted here rather than inferred.
+    const db = new DatabaseSync(file);
+    let chunkRows = 0;
+    let termRows = 0;
+    try {
+      chunkRows = Number((db.prepare('SELECT COUNT(*) AS c FROM chunks').get() as { c: number }).c);
+      termRows = Number(
+        (db.prepare('SELECT COUNT(*) AS c FROM chunks_terms').get() as { c: number }).c,
+      );
+    } finally {
+      db.close();
+    }
+    expect(chunkRows).toBe(1);
+    expect(termRows).toBe(chunkRows);
   });
 });
 

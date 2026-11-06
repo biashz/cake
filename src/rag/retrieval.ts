@@ -1,31 +1,7 @@
 import type { Embedder } from './embedder.js';
 import type { ChunkRecord, CodeIndexStore } from './index-store.js';
 import { indexCodebase } from './indexer.js';
-
-const STOPWORDS = new Set([
-  'the',
-  'and',
-  'for',
-  'with',
-  'this',
-  'that',
-  'from',
-  'into',
-  'function',
-  'const',
-  'return',
-  'where',
-  'what',
-  'how',
-  'does',
-  'class',
-  'import',
-  'export',
-  'let',
-  'var',
-  'async',
-  'await',
-]);
+import { tokenize } from './terms.js';
 
 export interface RankedChunk {
   chunk: ChunkRecord;
@@ -78,21 +54,6 @@ export interface SearchResult {
   semantic: boolean;
   indexed: boolean;
   note?: string;
-}
-
-/** Split identifiers on camelCase/snake_case and drop noise tokens. */
-export function tokenize(text: string): string[] {
-  const words = text.match(/[A-Za-z0-9_\u4e00-\u9fff]+/g) ?? [];
-  const tokens: string[] = [];
-  for (const word of words) {
-    for (const part of word.split(/_+/)) {
-      for (const piece of part.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/)) {
-        const token = piece.toLowerCase();
-        if (token.length >= 2 && !STOPWORDS.has(token)) tokens.push(token);
-      }
-    }
-  }
-  return tokens;
 }
 
 function lexicalScore(haystackCounts: Map<string, number>, queryTokens: string[]): number {
@@ -168,6 +129,29 @@ export function formatResults(results: RankedChunk[], maxChars = 12_000): string
   return blocks.join('\n\n');
 }
 
+/**
+ * Which chunks the scorer reads: everything the vectors found, plus the FTS
+ * candidates for the query tokens. A chunk can only score above zero by sharing a
+ * token with the query or by having a vector, and both sets are here; the FTS list
+ * is capped, and bm25 order means the dropped tail is the weakest keyword match.
+ */
+function candidates(
+  store: CodeIndexStore,
+  query: string,
+  vectorChunks: ChunkRecord[],
+  limit: number,
+): ChunkRecord[] {
+  const lexical = store.searchTerms([...new Set(tokenize(query))], Math.max(limit * 24, 400));
+  const merged: ChunkRecord[] = [];
+  const seen = new Set<number>();
+  for (const chunk of [...vectorChunks, ...lexical]) {
+    if (seen.has(chunk.id)) continue;
+    seen.add(chunk.id);
+    merged.push(chunk);
+  }
+  return merged;
+}
+
 /** Search the indexed codebase, building or refreshing the index on demand. */
 export async function searchCodebase(options: SearchOptions): Promise<SearchResult> {
   const { cwd, store, query, embedder, abortSignal, onProgress } = options;
@@ -191,12 +175,14 @@ export async function searchCodebase(options: SearchOptions): Promise<SearchResu
   let semantic = false;
   let note: string | undefined;
   const vectorScores = new Map<number, number>();
+  const vectorChunks: ChunkRecord[] = [];
   if (embedder) {
     try {
       const [queryVector] = await embedder.embed([query], abortSignal);
       if (queryVector) {
         for (const hit of store.searchVectors(Float32Array.from(queryVector), limit * 3)) {
           vectorScores.set(hit.chunk.id, hit.score);
+          vectorChunks.push(hit.chunk);
         }
         semantic = true;
       }
@@ -207,6 +193,11 @@ export async function searchCodebase(options: SearchOptions): Promise<SearchResu
     note = 'embeddings not configured; lexical search only';
   }
 
-  const results = mergeResults(store.allChunks(), query, vectorScores, limit);
+  const results = mergeResults(
+    candidates(store, query, vectorChunks, limit),
+    query,
+    vectorScores,
+    limit,
+  );
   return { results, semantic, indexed, note };
 }

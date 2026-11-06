@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { type Database, DatabaseSync } from '../session/sqlite.js';
+import { toTerms } from './terms.js';
 
 export interface FileRecord {
   path: string;
@@ -73,7 +74,11 @@ const SCHEMA = `
     value TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS chunks_path ON chunks (path);
+  CREATE VIRTUAL TABLE IF NOT EXISTS chunks_terms USING fts5(terms);
 `;
+
+/** Rows written before this table existed; one rebuild puts them in the index. */
+const TERMS_VERSION = 'fts.terms.v1';
 
 function toRecord(row: ChunkRow): ChunkRecord {
   return {
@@ -111,6 +116,25 @@ export class CodeIndexStore {
   private constructor(db: Database) {
     this.db = db;
     this.db.exec(SCHEMA);
+    if (this.getMeta(TERMS_VERSION) !== '1') this.rebuildTerms();
+  }
+
+  /** Index the token text of every chunk already stored, then mark the format current. */
+  private rebuildTerms(): void {
+    const rows = this.db.prepare('SELECT id, path, text FROM chunks').all() as unknown as Array<
+      Pick<ChunkRow, 'id' | 'path' | 'text'>
+    >;
+    this.db.exec('BEGIN');
+    try {
+      this.db.exec('DELETE FROM chunks_terms');
+      const insert = this.db.prepare('INSERT INTO chunks_terms (rowid, terms) VALUES (?, ?)');
+      for (const row of rows) insert.run(row.id, toTerms(row.path, row.text));
+      this.setMeta(TERMS_VERSION, '1');
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   static open(file: string): CodeIndexStore {
@@ -167,6 +191,9 @@ export class CodeIndexStore {
       this.db
         .prepare('DELETE FROM vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE path = ?)')
         .run(file.path);
+      this.db
+        .prepare('DELETE FROM chunks_terms WHERE rowid IN (SELECT id FROM chunks WHERE path = ?)')
+        .run(file.path);
       this.db.prepare('DELETE FROM chunks WHERE path = ?').run(file.path);
       this.db
         .prepare(
@@ -178,6 +205,7 @@ export class CodeIndexStore {
       const insertChunk = this.db.prepare(
         'INSERT INTO chunks (path, start_line, end_line, kind, text) VALUES (?, ?, ?, ?, ?)',
       );
+      const insertTerms = this.db.prepare('INSERT INTO chunks_terms (rowid, terms) VALUES (?, ?)');
       const insertVector = this.db.prepare(
         'INSERT INTO vectors (chunk_id, dim, vec) VALUES (?, ?, ?)',
       );
@@ -192,6 +220,7 @@ export class CodeIndexStore {
         );
         const id = Number(result.lastInsertRowid);
         ids.push(id);
+        insertTerms.run(id, toTerms(file.path, chunk.text));
         const vector = vectors?.[index];
         if (vector) {
           const normalized = normalizeVector(vector);
@@ -219,6 +248,9 @@ export class CodeIndexStore {
       this.db
         .prepare('DELETE FROM vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE path = ?)')
         .run(filePath);
+      this.db
+        .prepare('DELETE FROM chunks_terms WHERE rowid IN (SELECT id FROM chunks WHERE path = ?)')
+        .run(filePath);
       this.db.prepare('DELETE FROM chunks WHERE path = ?').run(filePath);
       this.db.prepare('DELETE FROM files WHERE path = ?').run(filePath);
       this.db.exec('COMMIT');
@@ -231,7 +263,9 @@ export class CodeIndexStore {
   clear(): void {
     this.db.exec('BEGIN');
     try {
-      this.db.exec('DELETE FROM vectors; DELETE FROM chunks; DELETE FROM files; DELETE FROM meta;');
+      this.db.exec(
+        'DELETE FROM vectors; DELETE FROM chunks_terms; DELETE FROM chunks; DELETE FROM files; DELETE FROM meta;',
+      );
       this.db.exec('COMMIT');
     } catch (err) {
       this.db.exec('ROLLBACK');
@@ -243,6 +277,25 @@ export class CodeIndexStore {
     const rows = this.db
       .prepare('SELECT * FROM chunks ORDER BY path, start_line')
       .all() as unknown as ChunkRow[];
+    return rows.map(toRecord);
+  }
+
+  /**
+   * Chunks whose indexed tokens overlap the query, best bm25 first. This only
+   * decides which chunks the scorer reads; the score itself is still computed in
+   * JS over the real text, so a candidate list cannot change a ranking.
+   */
+  searchTerms(tokens: string[], limit: number): ChunkRecord[] {
+    if (tokens.length === 0 || limit <= 0) return [];
+    const match = tokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' OR ');
+    const rows = this.db
+      .prepare(
+        `SELECT chunks.* FROM chunks_terms
+         JOIN chunks ON chunks.id = chunks_terms.rowid
+         WHERE chunks_terms MATCH ?
+         ORDER BY bm25(chunks_terms) LIMIT ?`,
+      )
+      .all(match, limit) as unknown as ChunkRow[];
     return rows.map(toRecord);
   }
 
