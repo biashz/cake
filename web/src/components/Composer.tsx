@@ -5,6 +5,7 @@ import type {
   ModelHandle,
   PermissionModeName,
 } from '../../../src/desktop/api.js';
+import { ACCEPTED_IMAGE_TYPES, type Attachment, sizeLabel } from '../attachments';
 import { SLASH_COMMANDS, type SlashCommand } from '../commands';
 import { MODE_LABEL, ModelMenu, ModeMenu, useDismiss } from './AgentMenus';
 import { Icon } from './Icons';
@@ -30,6 +31,9 @@ export function Composer({
   onChange,
   onSubmit,
   onStop,
+  attachments = [],
+  onAttach,
+  onDetach,
   loadFiles,
   commands = SLASH_COMMANDS,
   focusToken = 0,
@@ -46,6 +50,10 @@ export function Composer({
   onChange: (value: string) => void;
   onSubmit: () => void;
   onStop: () => void;
+  /** Pictures waiting for the next turn; the caps come from the kernel. */
+  attachments?: Attachment[];
+  onAttach?: (files: File[]) => void;
+  onDetach?: (index: number) => void;
   loadFiles?: (query: string) => Promise<string[]>;
   commands?: SlashCommand[];
   focusToken?: number;
@@ -57,6 +65,7 @@ export function Composer({
   onSetMode?: (mode: PermissionModeName) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const modelAnchor = useRef<HTMLDivElement>(null);
   const modeAnchor = useRef<HTMLDivElement>(null);
   const [caret, setCaret] = useState(0);
@@ -182,6 +191,8 @@ export function Composer({
   };
 
   const controls = init && onSetModel && onSetMode;
+  const caps = init?.attachments;
+  const canAttach = Boolean(caps?.vision && onAttach) && !running && !disabled;
   const percent =
     context && context.maxContext > 0
       ? Math.round(Math.min(context.used / context.maxContext, 1) * 100)
@@ -220,7 +231,36 @@ export function Composer({
           event.preventDefault();
           submit();
         }}
+        onDragOver={(event) => {
+          if (canAttach && event.dataTransfer?.types.includes('Files')) event.preventDefault();
+        }}
+        onDrop={(event) => {
+          const files = Array.from(event.dataTransfer?.files ?? []);
+          if (!canAttach || files.length === 0) return;
+          event.preventDefault();
+          onAttach?.(files);
+        }}
       >
+        {attachments.length > 0 ? (
+          <div className="composer-attachments">
+            {attachments.map((item, index) => (
+              <span className="attach-chip" key={item.dataUrl}>
+                <img className="attach-thumb" src={item.dataUrl} alt="" />
+                <span className="attach-label mono">{item.label}</span>
+                <button
+                  type="button"
+                  className="attach-remove"
+                  aria-label={`Remove ${item.label}`}
+                  onClick={() => onDetach?.(index)}
+                  disabled={!canAttach}
+                >
+                  <Icon name="x" size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+
         <div className="composer-row">
           <span className="prompt-mark mono" aria-hidden="true">
             ›
@@ -240,6 +280,12 @@ export function Composer({
             onSelect={(event) =>
               setCaret((event.target as HTMLTextAreaElement).selectionStart ?? value.length)
             }
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData?.files ?? []);
+              if (!canAttach || files.length === 0) return;
+              event.preventDefault();
+              onAttach?.(files);
+            }}
             onKeyDown={(event) => {
               if (suggest && suggest.items.length > 0) {
                 if (event.key === 'ArrowDown') {
@@ -274,54 +320,90 @@ export function Composer({
         </div>
 
         <div className="composer-toolbar">
-          {controls ? (
-            <div className="composer-controls">
-              <div className="menu-anchor" ref={modelAnchor}>
+          <div className="composer-controls">
+            {controls ? (
+              <>
+                <div className="menu-anchor" ref={modelAnchor}>
+                  <button
+                    type="button"
+                    className="composer-chip"
+                    onClick={() => {
+                      setModelOpen((open) => !open);
+                      setModeOpen(false);
+                    }}
+                    disabled={running || disabled}
+                    title="Switch provider and model"
+                    aria-haspopup="dialog"
+                    aria-expanded={modelOpen}
+                  >
+                    <span className="composer-chip-provider">{init.model.provider}</span>
+                    <span className="composer-chip-value mono">{init.model.modelId}</span>
+                    <Icon name="chevron-down" size={12} />
+                  </button>
+                  {modelOpen ? (
+                    <ModelMenu init={init} onSetModel={onSetModel} onClose={closeModel} />
+                  ) : null}
+                </div>
+
+                <div className="menu-anchor" ref={modeAnchor}>
+                  <button
+                    type="button"
+                    className={`composer-chip mode-${init.mode}`}
+                    onClick={() => {
+                      setModeOpen((open) => !open);
+                      setModelOpen(false);
+                    }}
+                    title="Switch permission mode"
+                    aria-haspopup="dialog"
+                    aria-expanded={modeOpen}
+                  >
+                    <span className="mode-dot" />
+                    <span>{MODE_LABEL[init.mode]}</span>
+                    <Icon name="chevron-down" size={12} />
+                  </button>
+                  {modeOpen ? (
+                    <ModeMenu mode={init.mode} onSetMode={onSetMode} onClose={closeMode} />
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+
+            {caps ? (
+              <>
                 <button
                   type="button"
                   className="composer-chip"
-                  onClick={() => {
-                    setModelOpen((open) => !open);
-                    setModeOpen(false);
-                  }}
-                  disabled={running || disabled}
-                  title="Switch provider and model"
-                  aria-haspopup="dialog"
-                  aria-expanded={modelOpen}
+                  data-testid="composer-attach"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={!canAttach}
+                  title={
+                    caps.vision
+                      ? `Attach up to ${caps.perTurn} images, ${sizeLabel(caps.maxBytes)} each`
+                      : 'This model cannot read images — switch to a vision model'
+                  }
                 >
-                  <span className="composer-chip-provider">{init.model.provider}</span>
-                  <span className="composer-chip-value mono">{init.model.modelId}</span>
-                  <Icon name="chevron-down" size={12} />
+                  <Icon name="image" size={13} />
+                  <span>Attach</span>
                 </button>
-                {modelOpen ? (
-                  <ModelMenu init={init} onSetModel={onSetModel} onClose={closeModel} />
-                ) : null}
-              </div>
-
-              <div className="menu-anchor" ref={modeAnchor}>
-                <button
-                  type="button"
-                  className={`composer-chip mode-${init.mode}`}
-                  onClick={() => {
-                    setModeOpen((open) => !open);
-                    setModelOpen(false);
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept={ACCEPTED_IMAGE_TYPES.join(',')}
+                  multiple
+                  data-testid="composer-attach-input"
+                  className="visually-hidden"
+                  aria-label="Attach images"
+                  disabled={!canAttach}
+                  tabIndex={-1}
+                  onChange={(event) => {
+                    const files = Array.from(event.target.files ?? []);
+                    if (files.length > 0) onAttach?.(files);
+                    event.target.value = '';
                   }}
-                  title="Switch permission mode"
-                  aria-haspopup="dialog"
-                  aria-expanded={modeOpen}
-                >
-                  <span className="mode-dot" />
-                  <span>{MODE_LABEL[init.mode]}</span>
-                  <Icon name="chevron-down" size={12} />
-                </button>
-                {modeOpen ? (
-                  <ModeMenu mode={init.mode} onSetMode={onSetMode} onClose={closeMode} />
-                ) : null}
-              </div>
-            </div>
-          ) : (
-            <div className="composer-controls" />
-          )}
+                />
+              </>
+            ) : null}
+          </div>
 
           <div className="composer-actions">
             {init ? (
@@ -340,6 +422,11 @@ export function Composer({
                 className="primary composer-send"
                 data-testid="composer-send"
                 disabled={disabled || value.trim() === ''}
+                title={
+                  attachments.length > 0 && value.trim() === ''
+                    ? 'Say what to look for before sending an image'
+                    : undefined
+                }
               >
                 Send
               </button>
@@ -354,6 +441,12 @@ export function Composer({
         </span>
         <span>
           <kbd>@</kbd> files · <kbd>/</kbd> commands
+          {caps?.vision ? (
+            <>
+              {' · '}
+              <kbd>Ctrl</kbd>+<kbd>V</kbd> image
+            </>
+          ) : null}
         </span>
       </div>
     </div>

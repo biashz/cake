@@ -3,8 +3,10 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildCostBoard, type CostRow, emptyCostBoard } from '../src/core/cost-board.js';
 import type {
+  AttachmentCaps,
   CostPayload,
   DoctorFixPayload,
+  InitPayload,
   McpDraft,
   McpServerRow,
   McpStatus,
@@ -12,6 +14,7 @@ import type {
   RulesPayload,
   SessionInfo,
 } from '../src/desktop/api.js';
+import type { Attachment } from '../web/src/attachments';
 import { ApprovalCard } from '../web/src/components/ApprovalCard';
 import { Composer } from '../web/src/components/Composer';
 import { HeatBar } from '../web/src/components/HeatBar';
@@ -517,6 +520,17 @@ describe('CostPanel', () => {
   });
 });
 
+/** The composer reads the caps out of init; the rest of the payload belongs to other panels. */
+function composerInit(attachments: Partial<AttachmentCaps> = {}): InitPayload {
+  return {
+    attachments: { vision: true, perTurn: 4, maxBytes: 1_000_000, ...attachments },
+  } as InitPayload;
+}
+
+function attached(dataUrl: string, label: string): Attachment {
+  return { dataUrl, label };
+}
+
 describe('Composer', () => {
   it('submits, stops, and reports edits', () => {
     const onChange = vi.fn();
@@ -563,6 +577,139 @@ describe('Composer', () => {
     fireEvent.click(screen.getByTestId('composer-stop'));
     expect(onStop).toHaveBeenCalledTimes(1);
   });
+
+  it('takes a pasted, dropped or picked picture as a request to attach', () => {
+    const onAttach = vi.fn();
+    const file = new File(['a picture'], 'shot.png', { type: 'image/png' });
+    render(
+      <Composer
+        value="look"
+        running={false}
+        disabled={false}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        init={composerInit()}
+        onAttach={onAttach}
+      />,
+    );
+
+    const input = screen.getByTestId('composer-input');
+    fireEvent.paste(input, { clipboardData: { files: [file] } });
+    fireEvent.drop(input.closest('form') as HTMLFormElement, { dataTransfer: { files: [file] } });
+    expect(onAttach).toHaveBeenCalledTimes(2);
+    expect(onAttach).toHaveBeenLastCalledWith([file]);
+
+    const picker = screen.getByTestId('composer-attach-input') as HTMLInputElement;
+    fireEvent.change(picker, { target: { files: [file] } });
+    expect(onAttach).toHaveBeenCalledTimes(3);
+    expect(onAttach).toHaveBeenLastCalledWith([file]);
+  });
+
+  it('shows a staged picture and takes it off the turn again', () => {
+    const onDetach = vi.fn();
+    render(
+      <Composer
+        value="look"
+        running={false}
+        disabled={false}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        init={composerInit()}
+        attachments={[attached('data:image/png;base64,YQ==', 'image/png · 1 B')]}
+        onAttach={vi.fn()}
+        onDetach={onDetach}
+      />,
+    );
+
+    expect(screen.getByText('image/png · 1 B')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove image/png · 1 B' }));
+    expect(onDetach).toHaveBeenCalledWith(0);
+  });
+
+  it('keeps Attach out of reach, and the clipboard out of the turn, without a vision model', () => {
+    const onAttach = vi.fn();
+    render(
+      <Composer
+        value="look"
+        running={false}
+        disabled={false}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        init={composerInit({ vision: false })}
+        onAttach={onAttach}
+      />,
+    );
+
+    expect(screen.getByTestId('composer-attach').hasAttribute('disabled')).toBe(true);
+    expect(screen.getByTestId('composer-attach').getAttribute('title')).toBe(
+      'This model cannot read images — switch to a vision model',
+    );
+    expect(screen.getByTestId('composer-attach-input').hasAttribute('disabled')).toBe(true);
+
+    const input = screen.getByTestId('composer-input');
+    const file = new File(['a picture'], 'shot.png', { type: 'image/png' });
+    fireEvent.paste(input, { clipboardData: { files: [file] } });
+    fireEvent.drop(input.closest('form') as HTMLFormElement, { dataTransfer: { files: [file] } });
+    expect(onAttach).not.toHaveBeenCalled();
+  });
+
+  it('sends a picture with the words that say what to look for, never on its own', () => {
+    const { rerender } = render(
+      <Composer
+        value=""
+        running={false}
+        disabled={false}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        init={composerInit()}
+        attachments={[attached('data:image/png;base64,YQ==', 'image/png · 1 B')]}
+      />,
+    );
+
+    const send = screen.getByTestId('composer-send');
+    expect(send.hasAttribute('disabled')).toBe(true);
+    expect(send.getAttribute('title')).toBe('Say what to look for before sending an image');
+
+    rerender(
+      <Composer
+        value="what is in this shot"
+        running={false}
+        disabled={false}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        init={composerInit()}
+        attachments={[attached('data:image/png;base64,YQ==', 'image/png · 1 B')]}
+      />,
+    );
+    expect(screen.getByTestId('composer-send').hasAttribute('disabled')).toBe(false);
+  });
+
+  it('holds Attach back while the turn runs, so a picture cannot join a spent one', () => {
+    render(
+      <Composer
+        value="look"
+        running
+        disabled={false}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        init={composerInit()}
+        attachments={[attached('data:image/png;base64,YQ==', 'image/png · 1 B')]}
+        onAttach={vi.fn()}
+        onDetach={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('composer-attach').hasAttribute('disabled')).toBe(true);
+    expect(
+      screen.getByRole('button', { name: 'Remove image/png · 1 B' }).hasAttribute('disabled'),
+    ).toBe(true);
+  });
 });
 
 describe('Transcript', () => {
@@ -584,6 +731,40 @@ describe('Transcript', () => {
     expect(screen.getByText('10 tokens')).toBeTruthy();
     expect(screen.getByTestId('entry-error').textContent).toBe('boom');
     expect(screen.getByText('partial')).toBeTruthy();
+  });
+
+  it('shows the pictures a turn was sent with, beside the words that asked', () => {
+    const { rerender } = render(
+      <Transcript
+        entries={[
+          {
+            id: 0,
+            role: 'user',
+            text: 'what is in this shot',
+            images: ['data:image/png;base64,YQ==', 'data:image/png;base64,Yg=='],
+          },
+        ]}
+        streaming=""
+        onInsertFile={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('turn').textContent).toContain('2 images');
+    const list = screen.getByRole('list', { name: 'Pictures sent with this turn' });
+    expect(Array.from(list.querySelectorAll('img')).map((img) => img.getAttribute('src'))).toEqual([
+      'data:image/png;base64,YQ==',
+      'data:image/png;base64,Yg==',
+    ]);
+
+    rerender(
+      <Transcript
+        entries={[{ id: 1, role: 'user', text: 'no pictures here' }]}
+        streaming=""
+        onInsertFile={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('list', { name: 'Pictures sent with this turn' })).toBeNull();
+    expect(screen.getByTestId('turn').textContent).not.toContain('image');
   });
 
   it('groups consecutive calls under one turn and tallies repeats', () => {

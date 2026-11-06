@@ -1,9 +1,15 @@
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { ModelMessage } from 'ai';
+import type { FilePart, ModelMessage } from 'ai';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { exportFileName, exportSessionMarkdown, sessionMarkdown } from '../src/session/export.js';
+import {
+  exportFileName,
+  exportSessionMarkdown,
+  renderSession,
+  type SessionRender,
+  sessionMarkdown,
+} from '../src/session/export.js';
 import { type SessionMeta, SessionStore } from '../src/session/store.js';
 
 let dir: string;
@@ -31,9 +37,13 @@ function only(store: SessionStore, cwd = '/repo'): SessionMeta {
 }
 
 function markdown(store: SessionStore, id = only(store).id): string {
+  return render(store, id).markdown;
+}
+
+function render(store: SessionStore, id = only(store).id): SessionRender {
   const meta = store.get(id);
   if (!meta) throw new Error(`no session ${id}`);
-  return sessionMarkdown({ meta, messages: store.messages(id), plan: store.plan(id) });
+  return renderSession({ meta, messages: store.messages(id), plan: store.plan(id) });
 }
 
 describe('sessionMarkdown', () => {
@@ -203,7 +213,7 @@ describe('exportSessionMarkdown', () => {
     const meta = store.create({ cwd: dir, provider: 'anthropic', model: 'm' });
     store.saveMessages(meta.id, [{ role: 'user', content: 'the first prompt' }]);
 
-    const file = exportSessionMarkdown(store, meta.id);
+    const file = exportSessionMarkdown(store, meta.id).file;
     expect(file).toBe(path.join(dir, '.cake', 'exports', exportFileName(meta)));
     expect(await readFile(file, 'utf8')).toContain('the first prompt');
 
@@ -211,7 +221,9 @@ describe('exportSessionMarkdown', () => {
       { role: 'user', content: 'the first prompt' },
       { role: 'assistant', content: [{ type: 'text', text: 'and a reply' }] },
     ]);
-    expect(await readFile(exportSessionMarkdown(store, meta.id), 'utf8')).toContain('and a reply');
+    expect(await readFile(exportSessionMarkdown(store, meta.id).file, 'utf8')).toContain(
+      'and a reply',
+    );
     expect(await readdir(path.dirname(file))).toHaveLength(1);
 
     store.close();
@@ -221,7 +233,7 @@ describe('exportSessionMarkdown', () => {
     const store = storeWith([{ role: 'user', content: 'somewhere else' }]);
     const target = path.join(dir, 'notes', 'transcript.md');
 
-    expect(exportSessionMarkdown(store, only(store).id, target)).toBe(target);
+    expect(exportSessionMarkdown(store, only(store).id, target).file).toBe(target);
     expect(await readFile(target, 'utf8')).toContain('somewhere else');
     store.close();
   });
@@ -229,6 +241,128 @@ describe('exportSessionMarkdown', () => {
   it('refuses a session that is not there', () => {
     const store = SessionStore.inMemory();
     expect(() => exportSessionMarkdown(store, 'nope')).toThrow(/Unknown session "nope"/);
+    store.close();
+  });
+});
+
+describe('session export with pictures', () => {
+  /** The same bytes every time: 'hello'. */
+  function picture(base64 = 'aGVsbG8=', mediaType = 'image/png'): FilePart {
+    return { type: 'file', mediaType, data: base64 };
+  }
+
+  function links(md: string): string[] {
+    return [...md.matchAll(/!\[[^\]]*\]\((assets\/[^)]+)\)/g)].map((match) => match[1] ?? '');
+  }
+
+  it('links the pictures a turn was sent with', () => {
+    const store = storeWith([
+      { role: 'user', content: [{ type: 'text', text: 'what is in this?' }, picture()] },
+    ]);
+
+    expect(links(markdown(store))).toEqual([
+      expect.stringMatching(/^assets\/image-[0-9a-f]{12}\.png$/),
+    ]);
+    expect(markdown(store)).toContain('what is in this?');
+    store.close();
+  });
+
+  it('keeps a turn that carried only pictures', () => {
+    const store = storeWith([{ role: 'user', content: [picture(), picture('Y29weQ==')] }]);
+
+    const md = markdown(store);
+    expect(md).toContain('## 1. 2 images');
+    expect(links(md)).toHaveLength(2);
+    store.close();
+  });
+
+  it('names a picture by its bytes, so the same one twice links one file', () => {
+    const store = storeWith([
+      { role: 'user', content: [{ type: 'text', text: 'look' }, picture()] },
+      { role: 'assistant', content: [{ type: 'text', text: 'seen' }] },
+      { role: 'user', content: [{ type: 'text', text: 'again' }, picture()] },
+    ]);
+
+    const md = markdown(store);
+    expect(links(md)).toHaveLength(2);
+    expect(new Set(links(md)).size).toBe(1);
+    // One name, so one file: the folder cannot hold two copies of the same pixels.
+    expect(render(store).assets).toHaveLength(1);
+    store.close();
+  });
+
+  it('reads the bytes whether the stored part tags them or not', () => {
+    const store = storeWith([
+      {
+        role: 'user',
+        content: [
+          picture(),
+          {
+            type: 'file',
+            mediaType: 'image/png',
+            data: { type: 'data', data: 'aGVsbG8=' },
+          },
+        ],
+      },
+    ]);
+
+    const assets = render(store).assets;
+    expect(assets).toHaveLength(1);
+    expect(assets[0]?.bytes.toString('utf8')).toBe('hello');
+    store.close();
+  });
+
+  it('writes the bytes beside the Markdown that links them', async () => {
+    const store = storeWith([
+      { role: 'user', content: [{ type: 'text', text: 'read this' }, picture()] },
+    ]);
+    const target = path.join(dir, 'out', 'transcript.md');
+
+    const written = exportSessionMarkdown(store, only(store).id, target);
+    const link = links(await readFile(written.file, 'utf8'))[0] ?? '';
+    // The claim a reader checks: the link resolves against the Markdown's own folder.
+    expect(await readFile(path.join(path.dirname(written.file), link), 'utf8')).toBe('hello');
+    // The note is built from this: where the pictures went, and how many of them.
+    expect(written).toMatchObject({ file: target, pictures: 1 });
+    expect(written.assetFolder).toBe(path.join(dir, 'out', 'assets'));
+    expect(await readdir(written.assetFolder ?? '')).toEqual([link.split('/')[1]]);
+    store.close();
+  });
+
+  it('keeps the format a picture claims in the name it writes', () => {
+    const store = storeWith([
+      {
+        role: 'user',
+        content: [picture('aGVsbG8=', 'image/jpeg'), picture('aGVsbG8=', 'image/svg+xml')],
+      },
+    ]);
+
+    // The same bytes, two claimed formats: a reader needs the right suffix on each.
+    expect(links(markdown(store)).map((link) => path.extname(link))).toEqual(['.jpg', '.img']);
+    expect(render(store).assets.map((asset) => asset.bytes.toString('utf8'))).toEqual([
+      'hello',
+      'hello',
+    ]);
+    store.close();
+  });
+
+  it('leaves what is not a picture out of both the links and the folder', async () => {
+    const store = storeWith([
+      {
+        role: 'user',
+        content: [
+          { type: 'file', mediaType: 'application/pdf', data: 'JVBERg==' },
+          { type: 'text', text: 'a pdf is not a picture' },
+        ],
+      },
+    ]);
+    const target = path.join(dir, 'plain', 'transcript.md');
+
+    const written = exportSessionMarkdown(store, only(store).id, target);
+    expect(written).toMatchObject({ file: target, pictures: 0 });
+    expect(written.assetFolder).toBeUndefined();
+    expect(await readdir(path.join(dir, 'plain'))).toEqual(['transcript.md']);
+    expect(markdown(store)).not.toContain('assets/');
     store.close();
   });
 });

@@ -1,4 +1,5 @@
 import type { CodebaseHit } from '../../src/rag/retrieval.js';
+import { imagesOfContent } from './attachments';
 
 export type EntryRole = 'user' | 'assistant' | 'tool' | 'info' | 'note' | 'error';
 
@@ -33,6 +34,8 @@ export interface Entry {
   role: EntryRole;
   text?: string;
   meta?: string;
+  /** Pictures this turn was sent with, as inline data URLs. */
+  images?: string[];
   /** Eyebrow label for kernel notes, e.g. "index" or "context". */
   kind?: string;
   /** On a codebase note: the chunks cake actually read, rendered as hit cards. */
@@ -138,7 +141,15 @@ export function entriesFromMessages(messages: unknown[]): Entry[] {
           : Array.isArray(message.content)
             ? message.content.map((part) => (part as { text?: string }).text ?? '').join('')
             : '';
-      if (text.trim()) entries.push({ id: nextId++, role: 'user', text });
+      const images = imagesOfContent(message.content);
+      if (text.trim() || images.length > 0) {
+        entries.push({
+          id: nextId++,
+          role: 'user',
+          text,
+          images: images.length > 0 ? images : undefined,
+        });
+      }
       continue;
     }
     if (message.role === 'assistant') {

@@ -4,6 +4,8 @@ import type { AddressInfo } from 'node:net';
 export interface MockRequest {
   hasToolResult: boolean;
   toolCount: number;
+  /** Picture blocks on the wire: proof an attached image left the app. */
+  imageParts: number;
 }
 
 export interface MockAnthropic {
@@ -23,6 +25,22 @@ function hasToolResult(messages: Json[]): boolean {
     const content = message.content;
     return Array.isArray(content) && content.some((part) => (part as Json).type === 'tool_result');
   });
+}
+
+/** Anthropic's wire shape for a picture: `{type:'image', source:{type:'base64', data}}`. */
+function imageParts(messages: Json[]): number {
+  let found = 0;
+  for (const message of messages) {
+    const content = message.content;
+    if (!Array.isArray(content)) continue;
+    for (const raw of content) {
+      const part = raw as Json;
+      const source = part.source as Json | undefined;
+      if (part.type === 'image' && source?.type === 'base64' && typeof source.data === 'string')
+        found += 1;
+    }
+  }
+  return found;
 }
 
 function textResponse(model: string, text: string) {
@@ -167,6 +185,7 @@ export async function startMockAnthropic(): Promise<MockAnthropic> {
       requests.push({
         hasToolResult: toolResult,
         toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+        imageParts: imageParts(messages),
       });
 
       const model = typeof body.model === 'string' ? body.model : 'claude-sonnet-4-5';

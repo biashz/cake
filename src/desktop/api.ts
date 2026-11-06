@@ -2,6 +2,7 @@ import type { ModelMessage } from 'ai';
 import type { CostBoard, WorkspaceSpend } from '../core/cost-board.js';
 import type { Pricing, PricingSource } from '../core/pricing.js';
 import type { CodebaseHit } from '../rag/retrieval.js';
+import type { ExportResult } from '../session/export.js';
 import type { PermissionPreview, TaskItem } from '../tools/types.js';
 
 /**
@@ -178,6 +179,15 @@ export interface ContextPayload {
   estimated: true;
 }
 
+export interface AttachmentCaps {
+  /** Whether the open model reads images at all. */
+  vision: boolean;
+  /** Most pictures one turn may carry. */
+  perTurn: number;
+  /** Largest decoded size of one picture, in bytes. */
+  maxBytes: number;
+}
+
 export interface InitPayload {
   version: string;
   workspace: WorkspaceInfo | null;
@@ -185,6 +195,8 @@ export interface InitPayload {
   recents: string[];
   providers: ProviderSummary[];
   model: ModelHandle;
+  /** What the composer may attach: the open model's eyes, and the caps a turn carries. */
+  attachments: AttachmentCaps;
   mode: PermissionModeName;
   rules: RulesPayload;
   mcpStatus: McpStatus;
@@ -269,10 +281,10 @@ export interface CakeApi {
   deleteSession(id: string): Promise<SessionPayload | null>;
   /** Branch a session and make the branch active; the transcript carries over. */
   forkSession(id: string): Promise<SessionPayload>;
-  /** Write a session's transcript as Markdown; returns the path written. */
-  exportSession(id: string, file?: string): Promise<string>;
+  /** Write a session's transcript as Markdown, pictures and all; returns where each went. */
+  exportSession(id: string, file?: string): Promise<ExportResult>;
 
-  run(sessionId: string, prompt: string): Promise<RunResult>;
+  run(sessionId: string, prompt: string, images?: string[]): Promise<RunResult>;
   abort(): Promise<void>;
   respondPermission(id: string, decision: PermissionDecisionName): Promise<void>;
 

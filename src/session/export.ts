@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ModelMessage } from 'ai';
 import { spendLabel } from '../core/cost.js';
+import { storedImage } from '../core/images.js';
 import type { TaskItem } from '../tools/types.js';
 import type { SessionMeta, SessionStore } from './store.js';
 
@@ -64,14 +66,57 @@ function firstLine(value: string, max = 70): string {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
+/** Where the export writes the pictures a session was sent with, relative to its own file. */
+export const ASSET_FOLDER = 'assets';
+
+const IMAGE_EXT: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+};
+
 /**
- * The stored transcript as Markdown: what the model saw, in the order it saw it.
- * A `@file` mention is stored as the expanded text, and that is what lands here
- * too — the export is the conversation, not what was typed.
+ * A picture is named for what it holds, so the same bytes pasted into two turns
+ * link one file rather than writing a copy per turn. Nothing from the session
+ * reaches the name, so a link cannot point out of the export folder.
  */
-export function sessionMarkdown(document: SessionDocument): string {
+function assetName(mediaType: string, base64: string): string {
+  return `image-${createHash('sha256').update(base64).digest('hex').slice(0, 12)}${IMAGE_EXT[mediaType] ?? '.img'}`;
+}
+
+function imagesIn(content: unknown): { name: string; base64: string }[] {
+  if (!Array.isArray(content)) return [];
+  const found: { name: string; base64: string }[] = [];
+  for (const part of content) {
+    const image = storedImage(part);
+    if (image) found.push({ name: assetName(image.mediaType, image.base64), base64: image.base64 });
+  }
+  return found;
+}
+
+/** One file the export writes next to its own Markdown. */
+export interface SessionAsset {
+  name: string;
+  bytes: Buffer;
+}
+
+/** What a session renders to: the Markdown and every picture that Markdown links. */
+export interface SessionRender {
+  markdown: string;
+  assets: SessionAsset[];
+}
+
+/**
+ * The stored transcript as Markdown, with the pictures it links: what the model
+ * saw, in the order it saw it. A `@file` mention is stored as the expanded text,
+ * and that is what lands here too — the export is the conversation, not what was typed.
+ */
+export function renderSession(document: SessionDocument): SessionRender {
   const { meta, messages, plan } = document;
   const out: string[] = [];
+  // Name to bytes, so a picture two turns repeat is written once and linked twice.
+  const assets = new Map<string, string>();
 
   out.push(`# ${meta.title || 'Untitled session'}`, '');
   out.push(`- session \`${meta.id.slice(0, 8)}\` · \`${meta.provider}/${meta.model}\``);
@@ -95,9 +140,19 @@ export function sessionMarkdown(document: SessionDocument): string {
     const role = message.role as string;
     if (role === 'user') {
       const body = text(message.content).trim();
-      if (!body) continue;
+      const pictures = imagesIn(message.content);
+      if (!body && pictures.length === 0) continue;
       turn += 1;
-      out.push('', `## ${turn}. ${firstLine(body)}`, '', body, '');
+      const title =
+        body !== ''
+          ? firstLine(body)
+          : `${pictures.length} ${pictures.length === 1 ? 'image' : 'images'}`;
+      out.push('', `## ${turn}. ${title}`, '');
+      if (body) out.push(body, '');
+      for (const picture of pictures) {
+        if (!assets.has(picture.name)) assets.set(picture.name, picture.base64);
+        out.push(`![${picture.name}](${ASSET_FOLDER}/${picture.name})`, '');
+      }
       continue;
     }
 
@@ -130,10 +185,21 @@ export function sessionMarkdown(document: SessionDocument): string {
     }
   }
 
-  return `${out
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()}\n`;
+  return {
+    markdown: `${out
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()}\n`,
+    assets: [...assets].map(([name, base64]) => ({
+      name,
+      bytes: Buffer.from(base64, 'base64'),
+    })),
+  };
+}
+
+/** The transcript on its own, for a reader who has nowhere to write pictures. */
+export function sessionMarkdown(document: SessionDocument): string {
+  return renderSession(document).markdown;
 }
 
 /** A file name safe to write anywhere; `..` and path separators cannot survive the slug. */
@@ -147,18 +213,28 @@ export function exportFileName(meta: SessionMeta): string {
   return `${slug.replace(/^[.-]+/, '') || 'cake'}-${meta.id.slice(0, 8)}.md`;
 }
 
+/** What one export wrote: the Markdown, and the pictures it links beside it. */
+export interface ExportResult {
+  file: string;
+  /** How many picture files were written next to the Markdown. */
+  pictures: number;
+  /** The folder holding them — only when there was something to hold. */
+  assetFolder?: string;
+}
+
 /**
- * Write one session as Markdown and return the path. Re-exporting the same
- * session replaces its own file, because the name carries the session id.
+ * Write one session as Markdown, with every picture it links written next to it.
+ * Re-exporting the same session replaces its own files, because the name carries
+ * the session id.
  */
 export function exportSessionMarkdown(
   store: SessionStore,
   sessionId: string,
   file?: string,
-): string {
+): ExportResult {
   const meta = store.get(sessionId);
   if (!meta) throw new Error(`Unknown session "${sessionId}"`);
-  const markdown = sessionMarkdown({
+  const rendered = renderSession({
     meta,
     messages: store.messages(sessionId),
     plan: store.plan(sessionId),
@@ -166,7 +242,16 @@ export function exportSessionMarkdown(
   const target = file
     ? path.resolve(file)
     : path.join(meta.cwd, '.cake', 'exports', exportFileName(meta));
-  mkdirSync(path.dirname(target), { recursive: true });
-  writeFileSync(target, markdown, 'utf8');
-  return target;
+  const folder = path.dirname(target);
+  mkdirSync(folder, { recursive: true });
+  let assetFolder: string | undefined;
+  if (rendered.assets.length > 0) {
+    assetFolder = path.join(folder, ASSET_FOLDER);
+    mkdirSync(assetFolder, { recursive: true });
+    for (const asset of rendered.assets) {
+      writeFileSync(path.join(assetFolder, asset.name), asset.bytes);
+    }
+  }
+  writeFileSync(target, rendered.markdown, 'utf8');
+  return { file: target, pictures: rendered.assets.length, assetFolder };
 }

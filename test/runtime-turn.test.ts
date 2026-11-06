@@ -6,6 +6,7 @@ import { MockLanguageModelV4 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { AgentEvent, TokenUsage } from '../src/core/events.js';
+import { imageDataUrl, MAX_IMAGES_PER_TURN } from '../src/core/images.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import type { ModelProvider } from '../src/providers/types.js';
 import { runTurn, type TurnNote } from '../src/runtime/turn.js';
@@ -21,16 +22,40 @@ function usage(input: number, output: number) {
   };
 }
 
-function registryFor(model: MockLanguageModelV4): ProviderRegistry {
+function registryFor(model: MockLanguageModelV4, vision = false): ProviderRegistry {
   const provider: ModelProvider = {
     id: 'anthropic',
     label: 'mock',
     defaultModelId: 'claude-sonnet-4-5',
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
     languageModel: () => model,
-    capabilities: () => ({ toolCalling: true, vision: false, maxContext: 200_000 }),
+    capabilities: () => ({ toolCalling: true, vision, maxContext: 200_000 }),
   };
   return new ProviderRegistry().register(provider, 'test-key');
+}
+
+const PNG_URL = imageDataUrl(Buffer.from('a tiny picture'), 'image/png');
+// A real 1x1 PNG, so a mention of it is read as the bytes it claims to be.
+const PNG_BYTES = Uint8Array.from(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  ),
+);
+
+/** The SDK accepts the bytes bare or tagged; this reads either. */
+function imageBase64Of(data: unknown): string | undefined {
+  if (typeof data === 'string') return data;
+  const tagged = data as { type?: string; data?: unknown };
+  return typeof tagged?.data === 'string' ? tagged.data : undefined;
+}
+
+/** The content of the last user message the model was actually asked with. */
+function lastUserContent(model: MockLanguageModelV4): unknown {
+  const call = model.doStreamCalls[0];
+  const prompt = call?.prompt ?? [];
+  const users = prompt.filter((message) => message.role === 'user');
+  return users[users.length - 1]?.content;
 }
 
 function toolCallStream(name: string, input: unknown): { stream: ReadableStream<never> } {
@@ -383,5 +408,174 @@ describe('runTurn', () => {
     const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt ?? []);
     expect(prompt).toContain('<codebase query=');
     expect(prompt).toContain('alphaHandler');
+  });
+
+  it('puts an attached image beside the text it belongs to', async () => {
+    const model = new MockLanguageModelV4({ doStream: [textStream('seen')] });
+    const { ctx } = context();
+
+    await runTurn({
+      cwd,
+      registry: registryFor(model, true),
+      model: MODEL,
+      system: 'sys',
+      mode: 'default',
+      rules: { allow: [], deny: [] },
+      tools: [],
+      history: [],
+      prompt: 'what is in this?',
+      images: [PNG_URL],
+      maxContext: 200_000,
+      ctx,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    const parts = lastUserContent(model) as Array<{
+      type: string;
+      text?: string;
+      mediaType?: string;
+      data?: unknown;
+    }>;
+    expect(parts.map((part) => part.type)).toEqual(['text', 'file']);
+    expect(parts[0]?.text).toBe('what is in this?');
+    // The picture arrives as itself: its own bytes, tagged with its type.
+    expect(parts[1]?.mediaType).toBe('image/png');
+    expect(imageBase64Of(parts[1]?.data)).toBe('YSB0aW55IHBpY3R1cmU=');
+  });
+
+  it('reads a @mentioned image as an image, not as decoded text', async () => {
+    await writeFile(path.join(cwd, 'diagram.png'), PNG_BYTES);
+    const model = new MockLanguageModelV4({ doStream: [textStream('ok')] });
+    const notes: TurnNote[] = [];
+    const { ctx } = context();
+
+    await runTurn({
+      cwd,
+      registry: registryFor(model, true),
+      model: MODEL,
+      system: 'sys',
+      mode: 'default',
+      rules: { allow: [], deny: [] },
+      tools: [],
+      history: [],
+      prompt: 'what does @diagram.png show?',
+      maxContext: 200_000,
+      ctx,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+      onNote: (note) => notes.push(note),
+    });
+
+    const parts = lastUserContent(model) as Array<{ type: string; text?: string }>;
+    expect(parts.map((part) => part.type)).toEqual(['text', 'file']);
+    expect((parts[1] as { mediaType?: string }).mediaType).toBe('image/png');
+    // The prompt keeps the words as typed; only the attachment was added.
+    expect(parts[0]?.text).toBe('what does @diagram.png show?');
+    expect(notes).toContainEqual({ kind: 'files', text: 'attached diagram.png' });
+  });
+
+  it('sends one picture once, even when a paste and a mention are the same file', async () => {
+    await writeFile(path.join(cwd, 'diagram.png'), PNG_BYTES);
+    const model = new MockLanguageModelV4({ doStream: [textStream('ok')] });
+    const { ctx } = context();
+
+    await runTurn({
+      cwd,
+      registry: registryFor(model, true),
+      model: MODEL,
+      system: 'sys',
+      mode: 'default',
+      rules: { allow: [], deny: [] },
+      tools: [],
+      history: [],
+      prompt: 'what does @diagram.png show?',
+      // The same bytes, once pasted and once mentioned: two slots, two bills, one picture.
+      images: [imageDataUrl(PNG_BYTES, 'image/png')],
+      maxContext: 200_000,
+      ctx,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    const parts = lastUserContent(model) as Array<{ type: string }>;
+    expect(parts.map((part) => part.type)).toEqual(['text', 'file']);
+  });
+
+  it('refuses to spend a turn on a model that cannot read images', async () => {
+    const model = new MockLanguageModelV4({ doStream: [textStream('ok')] });
+    const { ctx } = context();
+
+    await expect(
+      runTurn({
+        cwd,
+        registry: registryFor(model),
+        model: MODEL,
+        system: 'sys',
+        mode: 'default',
+        rules: { allow: [], deny: [] },
+        tools: [],
+        history: [],
+        prompt: 'look at this',
+        images: [PNG_URL],
+        maxContext: 200_000,
+        ctx,
+        abortSignal: new AbortController().signal,
+        onEvent: () => {},
+      }),
+    ).rejects.toThrow(/cannot read images/);
+
+    // Refused before the call, not after the bill.
+    expect(model.doStreamCalls).toHaveLength(0);
+  });
+
+  it('refuses a turn carrying more images than the caps allow', async () => {
+    const model = new MockLanguageModelV4({ doStream: [textStream('ok')] });
+    const { ctx } = context();
+
+    await expect(
+      runTurn({
+        cwd,
+        registry: registryFor(model, true),
+        model: MODEL,
+        system: 'sys',
+        mode: 'default',
+        rules: { allow: [], deny: [] },
+        tools: [],
+        history: [],
+        prompt: 'five at once',
+        images: Array.from({ length: MAX_IMAGES_PER_TURN + 1 }, () => PNG_URL),
+        maxContext: 200_000,
+        ctx,
+        abortSignal: new AbortController().signal,
+        onEvent: () => {},
+      }),
+    ).rejects.toThrow(/At most 4 images per turn/);
+    expect(model.doStreamCalls).toHaveLength(0);
+  });
+
+  it('sends only the typed words when the turn has no attachments', async () => {
+    const model = new MockLanguageModelV4({ doStream: [textStream('ok')] });
+    const { ctx } = context();
+
+    await runTurn({
+      cwd,
+      registry: registryFor(model),
+      model: MODEL,
+      system: 'sys',
+      mode: 'default',
+      rules: { allow: [], deny: [] },
+      tools: [],
+      history: [],
+      prompt: 'no attachments',
+      maxContext: 200_000,
+      ctx,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    // The SDK flattens a string prompt into one text part, so what is provable
+    // here is that an unattached turn carries no picture and no file blocks.
+    expect(lastUserContent(model)).toEqual([{ type: 'text', text: 'no attachments' }]);
   });
 });

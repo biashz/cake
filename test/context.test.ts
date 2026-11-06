@@ -6,6 +6,7 @@ import { MockLanguageModelV4 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   buildSystemPrompt,
+  contentText,
   createHistorySummarizer,
   estimateTokens,
   findAgentsFiles,
@@ -13,6 +14,12 @@ import {
   loadProjectInstructions,
   maybeCompress,
 } from '../src/core/context.js';
+import {
+  ESTIMATED_IMAGE_TOKENS,
+  imageDataUrl,
+  imageFilePart,
+  MAX_IMAGE_BYTES,
+} from '../src/core/images.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import type { ModelProvider } from '../src/providers/types.js';
 
@@ -64,11 +71,35 @@ describe('AGENTS.md discovery', () => {
 });
 
 describe('formatting and sizing', () => {
-  it('estimates tokens from serialized size', () => {
+  it('estimates tokens from text length', () => {
     const small = estimateTokens([{ role: 'user', content: 'hi' }]);
     const large = estimateTokens([{ role: 'user', content: 'a'.repeat(4000) }]);
     expect(large).toBeGreaterThan(small);
     expect(large).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('bills an image by the image, not by its base64', () => {
+    // A full-cap screenshot is ~1M "characters"; none of them are tokens.
+    const picture = imageDataUrl(Buffer.alloc(MAX_IMAGE_BYTES, 7), 'image/png');
+    const withImage = estimateTokens([
+      { role: 'user', content: [{ type: 'text', text: 'look' }, imageFilePart(picture)] },
+    ]);
+
+    expect(withImage).toBeLessThan(2_000);
+    expect(withImage).toBe(
+      estimateTokens([{ role: 'user', content: 'look' }]) + ESTIMATED_IMAGE_TOKENS,
+    );
+  });
+
+  it('keeps a picture out of the text a summary is written from', () => {
+    const picture = imageDataUrl(Buffer.from('a picture'), 'image/png');
+    const text = contentText([{ type: 'text', text: 'look' }, imageFilePart(picture)]);
+
+    expect(text).toBe('look\n[image]');
+    expect(text).not.toContain('base64');
+    expect(formatTranscript([{ role: 'user', content: [imageFilePart(picture)] }])).toBe(
+      'user: [image]',
+    );
   });
 
   it('clips long messages in the transcript', () => {

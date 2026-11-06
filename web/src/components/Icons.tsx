@@ -23,6 +23,7 @@ export type IconName =
   | 'clock'
   | 'command'
   | 'file'
+  | 'image'
   | 'terminal'
   | 'spark';
 
@@ -51,6 +52,7 @@ const PATHS: Record<IconName, string> = {
   command:
     'M9 6a3 3 0 1 0-3 3h3V6Zm0 0h6m0 0a3 3 0 1 1 3 3h-3V6ZM9 18a3 3 0 1 0-3-3h3v3Zm0 0h6m0 0a3 3 0 1 0 3-3h-3v3Zm0-6v-6M9 12v6',
   file: 'M6 3h8l4 4v14H6zM14 3v4h4',
+  image: 'M4 5h16v14H4zM8 11l3 3 2-2 3 3M15.5 8.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z',
   terminal: 'M4 5h16v14H4zM7 9l3 3-3 3M12 15h5',
   spark: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z',
 };

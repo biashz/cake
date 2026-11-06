@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildCostBoard, type CostRow } from '../src/core/cost-board.js';
+import { MAX_IMAGE_BYTES, MAX_IMAGE_URL_CHARS, MAX_IMAGES_PER_TURN } from '../src/core/images.js';
 import type {
   ContextPayload,
   CostPayload,
@@ -19,6 +20,7 @@ import {
   toWireEvent,
   workspaceOpenSchema,
 } from '../src/desktop/ipc.js';
+import type { ExportResult } from '../src/session/export.js';
 
 function row(overrides: Partial<CostRow> = {}): CostRow {
   return {
@@ -87,6 +89,7 @@ const initPayload: InitPayload = {
   recents: [],
   providers: [],
   model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+  attachments: { vision: true, perTurn: MAX_IMAGES_PER_TURN, maxBytes: MAX_IMAGE_BYTES },
   mode: 'default',
   rules: rulesPayload,
   mcpStatus: mcpStatusPayload,
@@ -131,6 +134,12 @@ const session: SessionInfo = {
 
 const sessionPayload: SessionPayload = { session, messages: [], plan: [] };
 
+/** An export with no pictures: one file, and nothing beside it to open. */
+const exportResult: ExportResult = {
+  file: '/tmp/demo/.cake/exports/demo-session1.md',
+  pictures: 0,
+};
+
 const runResult: RunResult = {
   sessionId: 'session-1',
   usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
@@ -152,7 +161,7 @@ function backend(): DesktopBackend {
     renameSession: vi.fn(() => [session]),
     deleteSession: vi.fn(() => sessionPayload),
     forkSession: vi.fn(() => sessionPayload),
-    exportSession: vi.fn(() => '/tmp/demo/.cake/exports/demo-session1.md'),
+    exportSession: vi.fn(() => exportResult),
     run: vi.fn(async () => runResult),
     abort: vi.fn(),
     respondPermission: vi.fn(),
@@ -195,12 +204,10 @@ describe('desktop IPC handlers', () => {
     expect(fake.deleteSession).toHaveBeenCalledWith('session-1');
     expect(await handlers['session:fork']?.({ id: 'session-1' })).toEqual(sessionPayload);
     expect(fake.forkSession).toHaveBeenCalledWith('session-1');
-    expect(await handlers['session:export']?.({ id: 'session-1' })).toBe(
-      '/tmp/demo/.cake/exports/demo-session1.md',
-    );
+    expect(await handlers['session:export']?.({ id: 'session-1' })).toEqual(exportResult);
     expect(fake.exportSession).toHaveBeenCalledWith('session-1', undefined);
-    expect(await handlers['session:export']?.({ id: 'session-1', file: 'notes.md' })).toBe(
-      '/tmp/demo/.cake/exports/demo-session1.md',
+    expect(await handlers['session:export']?.({ id: 'session-1', file: 'notes.md' })).toEqual(
+      exportResult,
     );
     expect(fake.exportSession).toHaveBeenCalledWith('session-1', 'notes.md');
     expect(await handlers['doctor:run']?.(undefined)).toEqual(doctorReport);
@@ -290,7 +297,33 @@ describe('desktop IPC handlers', () => {
       handlers['agent:run']?.({ sessionId: 'session-1', prompt: 'hi' }),
     ).resolves.toEqual(runResult);
     expect(fake.run).toHaveBeenCalledTimes(1);
-    expect(fake.run).toHaveBeenCalledWith('session-1', 'hi');
+    expect(fake.run).toHaveBeenCalledWith('session-1', 'hi', []);
+  });
+
+  it('keeps an attachments list inside the caps a turn can carry', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+    const png = 'data:image/png;base64,AAA=';
+
+    await expect(
+      handlers['agent:run']?.({
+        sessionId: 'session-1',
+        prompt: 'hi',
+        images: Array.from({ length: MAX_IMAGES_PER_TURN + 1 }, () => png),
+      }),
+    ).rejects.toThrow(/Invalid images/);
+    await expect(
+      handlers['agent:run']?.({
+        sessionId: 'session-1',
+        prompt: 'hi',
+        images: ['x'.repeat(MAX_IMAGE_URL_CHARS + 1)],
+      }),
+    ).rejects.toThrow(/Invalid images/);
+    expect(fake.run).not.toHaveBeenCalled();
+
+    // What survives the wire is the kernel's business, so it travels unchanged.
+    await handlers['agent:run']?.({ sessionId: 'session-1', prompt: 'hi', images: [png] });
+    expect(fake.run).toHaveBeenCalledWith('session-1', 'hi', [png]);
   });
 
   it('rejects malformed permission, mode, and model payloads', async () => {

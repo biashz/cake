@@ -11,6 +11,7 @@ import {
 } from '../core/context.js';
 import { buildCostBoard } from '../core/cost-board.js';
 import type { AgentEvent } from '../core/events.js';
+import { ESTIMATED_IMAGE_TOKENS, MAX_IMAGE_BYTES, MAX_IMAGES_PER_TURN } from '../core/images.js';
 import {
   BUILTIN_PRICING,
   type Pricing,
@@ -48,7 +49,7 @@ import { CodeIndexStore, defaultIndexFile } from '../rag/index-store.js';
 import { indexCodebase } from '../rag/indexer.js';
 import { buildToolCatalog, resolveEmbedder } from '../runtime/toolset.js';
 import { runTurn } from '../runtime/turn.js';
-import { exportSessionMarkdown } from '../session/export.js';
+import { type ExportResult, exportSessionMarkdown } from '../session/export.js';
 import { defaultSessionFile, type SessionMeta, SessionStore } from '../session/store.js';
 import type {
   PermissionDecision,
@@ -289,7 +290,7 @@ export class WorkspaceController implements DesktopBackend {
    * against the workspace and has to stay inside it, so a path typed in the
    * composer cannot drop a file somewhere else on disk.
    */
-  exportSession(id: string, file?: string): string {
+  exportSession(id: string, file?: string): ExportResult {
     const active = this.requireActive();
     if (!file || file.trim() === '') return exportSessionMarkdown(active.store, id);
     const target = path.resolve(active.cwd, file.trim());
@@ -350,7 +351,7 @@ export class WorkspaceController implements DesktopBackend {
     };
   }
 
-  async run(sessionId: string, prompt: string) {
+  async run(sessionId: string, prompt: string, images: string[] = []) {
     const active = this.requireActive();
     if (this.busy) throw new Error('A turn is already running');
     if (active.session.id !== sessionId) throw new Error(`Unknown session "${sessionId}"`);
@@ -359,7 +360,10 @@ export class WorkspaceController implements DesktopBackend {
     const controller = new AbortController();
     this.currentAbort = controller;
     this.turnEntries = [];
-    this.addTurnEntry('Prompt', estimateTextTokens(prompt));
+    this.addTurnEntry(
+      'Prompt',
+      estimateTextTokens(prompt) + images.length * ESTIMATED_IMAGE_TOKENS,
+    );
     const emit = (event: AgentEvent) => {
       // Persist as it happens: a turn that is stopped mid-way keeps its plan.
       if (event.type === 'plan') active.store.savePlan(sessionId, event.tasks);
@@ -389,6 +393,7 @@ export class WorkspaceController implements DesktopBackend {
         tools,
         history: active.store.messages(sessionId),
         prompt,
+        images,
         maxContext: provider.capabilities(active.model.modelId).maxContext,
         pricing: active.pricing,
         embedder: active.embedder,
@@ -609,6 +614,11 @@ export class WorkspaceController implements DesktopBackend {
       recents: this.recents,
       providers,
       model,
+      attachments: {
+        vision: this.registry.get(model.provider).capabilities(model.modelId).vision,
+        perTurn: MAX_IMAGES_PER_TURN,
+        maxBytes: MAX_IMAGE_BYTES,
+      },
       mode: active?.mode ?? 'default',
       rules: rulesView(active?.settings ?? this.fallbackSettings, {
         global: globalSettingsPath(this.homeDir),

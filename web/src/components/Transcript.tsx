@@ -266,6 +266,7 @@ function TurnCard({
   onInsertFile: (path: string) => void;
 }) {
   const prompt = turn.user?.text ?? '';
+  const images = turn.user?.images ?? [];
   const summary = stats(turn);
   return (
     <section className={`turn${open ? ' is-open' : ''}`} data-testid="turn">
@@ -276,13 +277,29 @@ function TurnCard({
         <span className="turn-prompt" title={prompt === '' ? undefined : prompt}>
           {prompt === '' ? 'Session notes' : prompt}
         </span>
+        {images.length === 0 ? null : (
+          <span className="turn-images mono" title="Pictures sent with this turn">
+            {images.length === 1 ? '1 image' : `${images.length} images`}
+          </span>
+        )}
         {summary === '' ? null : <span className="turn-stats mono">{summary}</span>}
         <span className="turn-caret" aria-hidden="true">
           {open ? '▾' : '▸'}
         </span>
       </button>
       {open ? (
-        <div className="turn-body">{bodyNodes(turn.body, copy, copiedId, onInsertFile)}</div>
+        <div className="turn-body">
+          {images.length === 0 ? null : (
+            <ul className="turn-attachments" aria-label="Pictures sent with this turn">
+              {images.map((src) => (
+                <li key={src}>
+                  <img className="turn-attach" src={src} alt="" />
+                </li>
+              ))}
+            </ul>
+          )}
+          {bodyNodes(turn.body, copy, copiedId, onInsertFile)}
+        </div>
       ) : null}
     </section>
   );

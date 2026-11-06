@@ -145,8 +145,11 @@ export function App(props: AppProps) {
       }
       case 'export': {
         try {
-          const file = exportSessionMarkdown(store, session.id, arg || undefined);
-          addEntry({ role: 'info', text: `transcript → ${file}` });
+          const written = exportSessionMarkdown(store, session.id, arg || undefined);
+          const count = written.pictures === 1 ? '1 picture' : `${written.pictures} pictures`;
+          // A folder of pictures beside the file is a surprise unless the note says it is there.
+          const extras = written.assetFolder ? ` + ${count} → ${written.assetFolder}` : '';
+          addEntry({ role: 'info', text: `transcript → ${written.file}${extras}` });
         } catch (err) {
           addEntry({ role: 'error', text: `[export] ${(err as Error).message}` });
         }

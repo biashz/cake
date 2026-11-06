@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { AgentEvent } from '../core/events.js';
+import { MAX_IMAGE_URL_CHARS, MAX_IMAGES_PER_TURN } from '../core/images.js';
 import type { Pricing } from '../core/pricing.js';
+import type { ExportResult } from '../session/export.js';
 import type {
   ContextPayload,
   CostPayload,
@@ -28,8 +30,8 @@ export interface DesktopBackend {
   renameSession(id: string, title: string): SessionInfo[];
   deleteSession(id: string): SessionPayload | null;
   forkSession(id: string): SessionPayload;
-  exportSession(id: string, file?: string): string;
-  run(sessionId: string, prompt: string): Promise<RunResult>;
+  exportSession(id: string, file?: string): ExportResult;
+  run(sessionId: string, prompt: string, images: string[]): Promise<RunResult>;
   abort(): void;
   respondPermission(id: string, decision: PermissionDecisionName): void;
   setModel(model: { provider: string; modelId: string }): Promise<InitPayload>;
@@ -68,6 +70,8 @@ export function parseWorkspacePath(payload: unknown): string {
 const runSchema = z.object({
   sessionId: z.string().min(1),
   prompt: z.string().min(1).max(200_000),
+  // Shape and size only; what counts as an image is the kernel's call, before any spend.
+  images: z.array(z.string().max(MAX_IMAGE_URL_CHARS)).max(MAX_IMAGES_PER_TURN).default([]),
 });
 
 const sessionSchema = z.object({
@@ -195,8 +199,8 @@ export function createHandlers(backend: DesktopBackend): Record<string, Handler>
       return backend.exportSession(id, file);
     },
     'agent:run': async (payload) => {
-      const { sessionId, prompt } = validate(runSchema, payload);
-      return backend.run(sessionId, prompt);
+      const { sessionId, prompt, images } = validate(runSchema, payload);
+      return backend.run(sessionId, prompt, images);
     },
     'agent:abort': async () => backend.abort(),
     'permission:respond': async (payload) => {

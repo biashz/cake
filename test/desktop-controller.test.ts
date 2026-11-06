@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CostLine } from '../src/core/cost.js';
+import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_TURN } from '../src/core/images.js';
 import { WorkspaceController } from '../src/desktop/controller.js';
 import { defaultSessionFile, SessionStore } from '../src/session/store.js';
 
@@ -350,7 +351,7 @@ describe('WorkspaceController fork and export', () => {
     store.saveMessages(sessionId, [{ role: 'user', content: 'export me' }]);
     store.close();
 
-    const file = ctrl.exportSession(sessionId);
+    const file = ctrl.exportSession(sessionId).file;
     expect(file.startsWith(join(cwd, '.cake', 'exports'))).toBe(true);
     expect(readFileSync(file, 'utf8')).toContain('# export me');
     await ctrl.dispose();
@@ -363,9 +364,28 @@ describe('WorkspaceController fork and export', () => {
     if (!sessionId) throw new Error('opening a workspace did not give a session');
 
     expect(() => ctrl.exportSession(sessionId, '../../escaped.md')).toThrow(/inside the workspace/);
-    const deep = ctrl.exportSession(sessionId, join('notes', 'deep.md'));
+    const deep = ctrl.exportSession(sessionId, join('notes', 'deep.md')).file;
     expect(deep).toBe(join(cwd, 'notes', 'deep.md'));
     expect(existsSync(deep)).toBe(true);
+    await ctrl.dispose();
+  });
+});
+
+describe('WorkspaceController attachments', () => {
+  it('reports the eyes of the open model, in the caps a turn carries', async () => {
+    const { cwd, ctrl } = scenario('attach-caps');
+    await ctrl.openWorkspace(cwd);
+
+    const seeing = await ctrl.setModel({ provider: 'anthropic', modelId: 'claude-sonnet-4-5' });
+    expect(seeing.attachments).toEqual({
+      vision: true,
+      perTurn: MAX_IMAGES_PER_TURN,
+      maxBytes: MAX_IMAGE_BYTES,
+    });
+
+    // The composer reads these off the payload; a blind model has to come back blind.
+    const blind = await ctrl.setModel({ provider: 'deepseek', modelId: 'deepseek-chat' });
+    expect(blind.attachments.vision).toBe(false);
     await ctrl.dispose();
   });
 });

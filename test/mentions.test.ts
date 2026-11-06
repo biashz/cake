@@ -14,11 +14,19 @@ afterEach(async () => {
   await rm(cwd, { recursive: true, force: true });
 });
 
-async function fixture(rel: string, content: string): Promise<void> {
+async function fixture(rel: string, content: string | Uint8Array): Promise<void> {
   const abs = path.join(cwd, rel);
   await mkdir(path.dirname(abs), { recursive: true });
-  await writeFile(abs, content, 'utf8');
+  await writeFile(abs, content);
 }
+
+// A 1x1 PNG, so an image fixture is the same bytes a screenshot would be.
+const PNG = Uint8Array.from(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  ),
+);
 
 describe('expandFileReferences', () => {
   it('appends mentioned files as blocks', async () => {
@@ -52,11 +60,48 @@ describe('expandFileReferences', () => {
     expect(out.text).toContain('… [truncated]');
   });
 
+  it('sends a @mentioned image as bytes, not as decoded text', async () => {
+    await fixture('diagram.png', PNG);
+    const out = await expandFileReferences('what does @diagram.png show?', cwd);
+
+    expect(out.files).toEqual(['diagram.png']);
+    expect(out.missing).toEqual([]);
+    expect(out.text).toBe('what does @diagram.png show?');
+    expect(out.images).toHaveLength(1);
+    expect(out.images[0]?.startsWith('data:image/png;base64,')).toBe(true);
+    // The bug this replaces: UTF-8 decoding of PNG bytes reached the model as junk.
+    expect(out.images[0]).not.toContain('\uFFFD');
+  });
+
+  it('counts every image kind it recognises, by extension, case-insensitively', async () => {
+    await fixture('a/b.PNG', PNG);
+    const out = await expandFileReferences('@a/b.PNG', cwd);
+    expect(out.images[0]?.startsWith('data:image/png;base64,')).toBe(true);
+  });
+
+  it('refuses an image bigger than a turn may carry', async () => {
+    await fixture('huge.png', Buffer.alloc(3_000_001, 1));
+    const out = await expandFileReferences('@huge.png', cwd);
+
+    expect(out.images).toEqual([]);
+    expect(out.missing).toEqual(['huge.png']);
+  });
+
+  it('will not inline a binary file that is not an image', async () => {
+    await fixture('archive.zip', Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 1, 2, 3]));
+    const out = await expandFileReferences('@archive.zip', cwd);
+
+    expect(out.text).toBe('@archive.zip');
+    expect(out.files).toEqual([]);
+    expect(out.missing).toEqual(['archive.zip']);
+  });
+
   it('leaves prompts without mentions untouched', async () => {
     const text = 'no mentions here';
     const out = await expandFileReferences(text, cwd);
     expect(out.text).toBe(text);
     expect(out.files).toEqual([]);
     expect(out.missing).toEqual([]);
+    expect(out.images).toEqual([]);
   });
 });

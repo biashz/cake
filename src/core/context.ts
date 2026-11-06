@@ -3,6 +3,7 @@ import path from 'node:path';
 import { generateText, type ModelMessage } from 'ai';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
+import { ESTIMATED_IMAGE_TOKENS, isImagePart } from './images.js';
 import { SYSTEM_PROMPT } from './prompt.js';
 
 const MAX_INSTRUCTIONS_BYTES = 32_000;
@@ -75,9 +76,30 @@ export function buildSystemPrompt({ cwd, projectInstructions }: SystemPromptOpti
   return parts.join('\n\n');
 }
 
-/** Rough token estimate: ~4 characters per token. */
+/**
+ * Rough token estimate. Base64 is not tokens: an image bills by area, which cake
+ * does not decode, so the meter charges a flat estimate per image. Counting the
+ * payload instead would let one screenshot look like a megabyte of prompt and
+ * compress history nobody asked to compress.
+ */
 export function estimateTokens(messages: ModelMessage[]): number {
-  return Math.ceil(JSON.stringify(messages).length / 4);
+  let chars = 0;
+  let images = 0;
+  for (const message of messages) {
+    const content = message.content;
+    if (typeof content === 'string') {
+      chars += content.length;
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    for (const raw of content) {
+      const part = raw as { type?: string; text?: unknown };
+      if (isImagePart(part)) images += 1;
+      else if (part.type === 'text') chars += String(part.text ?? '').length;
+      else chars += JSON.stringify(raw).length;
+    }
+  }
+  return Math.ceil(chars / 4) + images * ESTIMATED_IMAGE_TOKENS;
 }
 
 /** Tokens for plain text on the same ~4 chars/token basis as estimateTokens. */
@@ -92,6 +114,10 @@ export function contentText(content: unknown): string {
       .map((part) => {
         if (part && typeof part === 'object' && 'text' in part) {
           return String((part as { text: unknown }).text);
+        }
+        // A base64 blob is not something to read back to anyone.
+        if (part && typeof part === 'object' && isImagePart(part)) {
+          return '[image]';
         }
         return JSON.stringify(part);
       })

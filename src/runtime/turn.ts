@@ -3,6 +3,7 @@ import { runAgent } from '../core/agent.js';
 import { createHistorySummarizer, maybeCompress } from '../core/context.js';
 import { addUsage, type CostLine, costLine } from '../core/cost.js';
 import type { AgentEvent, TokenUsage } from '../core/events.js';
+import { assertImageBudget, imageFilePart } from '../core/images.js';
 import { expandFileReferences } from '../core/mentions.js';
 import type { PricingOverrides } from '../core/pricing.js';
 import type { PermissionRules } from '../permissions/rules.js';
@@ -32,6 +33,8 @@ export interface TurnOptions {
   tools: CakeTool[];
   history: ModelMessage[];
   prompt: string;
+  /** Data URLs attached to this prompt, ahead of any `@file` images. */
+  images?: string[];
   maxContext: number;
   /** Rate-card additions from config, used when costing this turn. */
   pricing?: PricingOverrides;
@@ -52,6 +55,33 @@ export interface TurnResult {
   lines: CostLine[];
 }
 
+/** Text alone stays a plain string; one image turns the prompt into content parts. */
+function userMessage(text: string, images: readonly string[]): ModelMessage {
+  if (images.length === 0) return { role: 'user', content: text };
+  return {
+    role: 'user',
+    content: [{ type: 'text', text }, ...images.map(imageFilePart)],
+  };
+}
+
+/**
+ * Refuse before anything is spent: a model that cannot read images must not be
+ * sent one, and a turn cannot carry more than the vendor caps.
+ */
+function assertImagesUsable(
+  registry: ProviderRegistry,
+  model: ModelSpec,
+  images: readonly string[],
+): void {
+  if (images.length === 0) return;
+  assertImageBudget(images);
+  if (!registry.get(model.provider).capabilities(model.modelId).vision) {
+    throw new Error(
+      `${model.modelId} cannot read images — pick a vision model, or send the turn without attachments`,
+    );
+  }
+}
+
 /**
  * One user turn: expand @codebase/@file references, compress history when needed,
  * then run the agent loop. Shared by the CLI and the desktop client so both paths
@@ -60,6 +90,8 @@ export interface TurnResult {
 export async function runTurn(options: TurnOptions): Promise<TurnResult> {
   const note = options.onNote ?? (() => {});
   const { cwd, registry, model, abortSignal } = options;
+  const attached = options.images ?? [];
+  assertImagesUsable(registry, model, attached);
 
   const codebase = await expandCodebaseMention(options.prompt, {
     cwd,
@@ -83,11 +115,15 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
   if (expanded.missing.length > 0) {
     note({
       kind: 'files',
-      text: `not found or outside workspace: ${expanded.missing.join(', ')}`,
+      text: `not attached (missing, outside the workspace, unreadable or too large): ${expanded.missing.join(', ')}`,
     });
   }
 
-  let messages: ModelMessage[] = [...options.history, { role: 'user', content: expanded.text }];
+  // One picture, one slot: `@diagram.png` beside an attached copy is still one picture.
+  const images = [...new Set([...attached, ...expanded.images])];
+  assertImagesUsable(registry, model, images);
+
+  let messages: ModelMessage[] = [...options.history, userMessage(expanded.text, images)];
   try {
     const compressed = await maybeCompress(messages, {
       maxTokens: options.maxContext,

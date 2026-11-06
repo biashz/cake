@@ -277,4 +277,31 @@ describe('entriesFromMessages', () => {
     ]);
     expect(entries[0]?.tool).toMatchObject({ callId: '', status: 'done', output: 'contents' });
   });
+
+  it('keeps the pictures a turn carried with the request they belong to', () => {
+    const entries = entriesFromMessages([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is in this shot' },
+          { type: 'file', mediaType: 'image/png', data: 'aGVsbG8=' },
+        ],
+      },
+      { role: 'assistant', content: 'a cat, asleep' },
+    ]);
+
+    expect(entries[0]).toMatchObject({
+      role: 'user',
+      text: 'what is in this shot',
+      images: ['data:image/png;base64,aGVsbG8='],
+    });
+    // Words alone are not a picture, so nothing extra rides on the entry.
+    expect(entriesFromMessages([{ role: 'user', content: 'plain' }])[0]?.images).toBeUndefined();
+
+    // A picture with no words at all is still a turn the person sent.
+    const only = entriesFromMessages([
+      { role: 'user', content: [{ type: 'file', mediaType: 'image/png', data: 'aGVsbG8=' }] },
+    ]);
+    expect(only[0]).toMatchObject({ role: 'user', text: '', images: [expect.any(String)] });
+  });
 });

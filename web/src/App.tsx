@@ -18,6 +18,7 @@ import type {
   TokenTotals,
 } from '../../src/desktop/api.js';
 import type { TaskItem } from '../../src/tools/types.js';
+import { type Attachment, pickImages } from './attachments';
 import { collectChanges } from './changes';
 import { ApprovalCard } from './components/ApprovalCard';
 import { CommandPalette, type PaletteAction } from './components/CommandPalette';
@@ -140,6 +141,7 @@ export function App() {
   const [streaming, setStreaming] = useState('');
   const [approvals, setApprovals] = useState<PermissionRequestPayload[]>([]);
   const [prompt, setPrompt] = useState('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -306,6 +308,7 @@ export function App() {
     setStreaming('');
     setEntries(restored);
     setApprovals([]);
+    setAttachments([]);
     setLastUsage(null);
     setPlan(payload.plan);
     setInit((current) =>
@@ -501,7 +504,14 @@ export function App() {
       if (!api) return;
       try {
         const written = await api.exportSession(id, file);
-        addEntry({ role: 'note', kind: 'export', text: `Markdown transcript → ${written}` });
+        const count = written.pictures === 1 ? '1 picture' : `${written.pictures} pictures`;
+        // A folder of pictures beside the file is a surprise unless the note says it is there.
+        const extras = written.assetFolder ? ` + ${count} → ${written.assetFolder}` : '';
+        addEntry({
+          role: 'note',
+          kind: 'export',
+          text: `Markdown transcript → ${written.file}${extras}`,
+        });
         setError(null);
       } catch (err) {
         setError(message(err));
@@ -856,23 +866,50 @@ export function App() {
     ],
   );
 
+  /**
+   * Reading happens in the browser, which has the bytes. The limits arrive with
+   * the workspace, so a refusal is a message rather than a failed send.
+   */
+  const attach = useCallback(
+    async (files: File[]) => {
+      const caps = init?.attachments;
+      if (!caps) return;
+      if (!caps.vision) {
+        setError(`${init.model.modelId} cannot read images — switch to a vision model`);
+        return;
+      }
+      const { accepted, rejected } = await pickImages(files, caps, attachments);
+      if (accepted.length > 0) setAttachments((list) => [...list, ...accepted]);
+      if (rejected.length > 0) setError(rejected.join(' · '));
+    },
+    [init, attachments],
+  );
+
+  const detach = useCallback((index: number) => {
+    setAttachments((list) => list.filter((_, position) => position !== index));
+  }, []);
+
   const submit = useCallback(async () => {
     const raw = prompt.trim();
     const sessionId = init?.workspace?.sessionId;
     if (!raw || !sessionId || runningRef.current || busy) return;
+    const images = attachments.map((item) => item.dataUrl);
     setPrompt('');
     setError(null);
     if (runSlash(raw)) {
+      // A slash command never reaches the kernel, so its pictures would vanish.
+      if (images.length > 0) setError('A command carries no images — remove them first');
       setFocusToken((value) => value + 1);
       return;
     }
     setApprovals([]);
-    addEntry({ role: 'user', text: raw });
+    setAttachments([]);
+    addEntry({ role: 'user', text: raw, images: images.length > 0 ? images : undefined });
     runningRef.current = true;
     setRunning(true);
     setStartedAt(Date.now());
     try {
-      await window.cake?.run(sessionId, raw);
+      await window.cake?.run(sessionId, raw, images);
     } catch (err) {
       addEntry({ role: 'error', text: message(err) });
     } finally {
@@ -890,6 +927,7 @@ export function App() {
     }
   }, [
     prompt,
+    attachments,
     init?.workspace?.sessionId,
     busy,
     runSlash,
@@ -1324,6 +1362,9 @@ export function App() {
                 onChange={setPrompt}
                 onSubmit={() => void submit()}
                 onStop={stop}
+                attachments={attachments}
+                onAttach={(files) => void attach(files)}
+                onDetach={detach}
                 loadFiles={loadFiles}
                 focusToken={focusToken}
                 init={init}
