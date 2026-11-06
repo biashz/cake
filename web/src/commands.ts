@@ -6,6 +6,8 @@ export interface SlashCommand {
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'new', hint: 'Start a new session' },
   { name: 'clear', hint: 'Clear the transcript with a new session' },
+  { name: 'fork', hint: 'Branch this conversation into a new session' },
+  { name: 'export', hint: 'Write the transcript as Markdown' },
   { name: 'cost', hint: 'Show session tokens and cost' },
   { name: 'model', hint: 'Choose provider and model' },
   { name: 'mode', hint: 'Change permission mode' },

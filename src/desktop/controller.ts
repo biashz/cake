@@ -1,4 +1,5 @@
 import { stat } from 'node:fs/promises';
+import path from 'node:path';
 import fg from 'fast-glob';
 import { configPaths, loadConfig } from '../config/config.js';
 import { setPricingEntry, setProviderApiKey } from '../config/write.js';
@@ -47,6 +48,7 @@ import { CodeIndexStore, defaultIndexFile } from '../rag/index-store.js';
 import { indexCodebase } from '../rag/indexer.js';
 import { buildToolCatalog, resolveEmbedder } from '../runtime/toolset.js';
 import { runTurn } from '../runtime/turn.js';
+import { exportSessionMarkdown } from '../session/export.js';
 import { defaultSessionFile, type SessionMeta, SessionStore } from '../session/store.js';
 import type {
   PermissionDecision,
@@ -259,6 +261,43 @@ export class WorkspaceController implements DesktopBackend {
     });
     active.session = session;
     return { session, messages: [], plan: [] };
+  }
+
+  /**
+   * Branch a session and switch to the branch. The transcript on screen is the
+   * same conversation; only where the next turn gets written changes.
+   */
+  forkSession(id: string): {
+    session: SessionMeta;
+    messages: ReturnType<SessionStore['messages']>;
+    plan: TaskItem[];
+  } {
+    const active = this.requireActive();
+    if (this.busy) throw new Error('Cannot fork while a turn is running');
+    if (!active.store.get(id)) throw new Error(`Unknown session "${id}"`);
+    const child = active.store.fork(id);
+    this.activateSession(child);
+    return {
+      session: active.session,
+      messages: active.store.messages(child.id),
+      plan: active.store.plan(child.id),
+    };
+  }
+
+  /**
+   * Write a session's transcript as Markdown. A relative `file` is resolved
+   * against the workspace and has to stay inside it, so a path typed in the
+   * composer cannot drop a file somewhere else on disk.
+   */
+  exportSession(id: string, file?: string): string {
+    const active = this.requireActive();
+    if (!file || file.trim() === '') return exportSessionMarkdown(active.store, id);
+    const target = path.resolve(active.cwd, file.trim());
+    const inside = path.relative(active.cwd, target);
+    if (inside.startsWith('..') || path.isAbsolute(inside)) {
+      throw new Error('Export path has to stay inside the workspace');
+    }
+    return exportSessionMarkdown(active.store, id, target);
   }
 
   openSession(id: string): {

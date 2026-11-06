@@ -307,3 +307,65 @@ describe('WorkspaceController cost board', () => {
     await ctrl.dispose();
   });
 });
+
+describe('WorkspaceController fork and export', () => {
+  it('switches to the branch and leaves the parent untouched', async () => {
+    const { cwd, ctrl } = scenario('fork');
+    const before = await ctrl.openWorkspace(cwd);
+    const sessionId = before.workspace?.sessionId;
+    if (!sessionId) throw new Error('opening a workspace did not give a session');
+
+    const store = SessionStore.open(defaultSessionFile(cwd));
+    store.saveMessages(sessionId, [{ role: 'user', content: 'the original prompt' }]);
+    store.savePlan(sessionId, [{ id: 1, subject: 'keep this step', status: 'in_progress' }]);
+    store.close();
+
+    const forked = ctrl.forkSession(sessionId);
+    expect(forked.session.id).not.toBe(sessionId);
+    expect(forked.session.parentId).toBe(sessionId);
+    expect(forked.messages).toEqual([{ role: 'user', content: 'the original prompt' }]);
+    expect(forked.plan).toEqual([{ id: 1, subject: 'keep this step', status: 'in_progress' }]);
+
+    const ids = ctrl.listSessions().map((session) => session.id);
+    expect(ids).toContain(forked.session.id);
+    expect(ctrl.openSession(sessionId).session.parentId).toBeNull();
+    await ctrl.dispose();
+  });
+
+  it('refuses to fork a session that is not there', async () => {
+    const { cwd, ctrl } = scenario('fork-missing');
+    await ctrl.openWorkspace(cwd);
+    expect(() => ctrl.forkSession('nope')).toThrow(/Unknown session "nope"/);
+    await ctrl.dispose();
+  });
+
+  it('writes the transcript of a session inside the workspace', async () => {
+    const { cwd, ctrl } = scenario('export');
+    const before = await ctrl.openWorkspace(cwd);
+    const sessionId = before.workspace?.sessionId;
+    if (!sessionId) throw new Error('opening a workspace did not give a session');
+
+    const store = SessionStore.open(defaultSessionFile(cwd));
+    store.setTitleIfEmpty(sessionId, 'export me');
+    store.saveMessages(sessionId, [{ role: 'user', content: 'export me' }]);
+    store.close();
+
+    const file = ctrl.exportSession(sessionId);
+    expect(file.startsWith(join(cwd, '.cake', 'exports'))).toBe(true);
+    expect(readFileSync(file, 'utf8')).toContain('# export me');
+    await ctrl.dispose();
+  });
+
+  it('keeps a named export inside the workspace', async () => {
+    const { cwd, ctrl } = scenario('export-named');
+    const before = await ctrl.openWorkspace(cwd);
+    const sessionId = before.workspace?.sessionId;
+    if (!sessionId) throw new Error('opening a workspace did not give a session');
+
+    expect(() => ctrl.exportSession(sessionId, '../../escaped.md')).toThrow(/inside the workspace/);
+    const deep = ctrl.exportSession(sessionId, join('notes', 'deep.md'));
+    expect(deep).toBe(join(cwd, 'notes', 'deep.md'));
+    expect(existsSync(deep)).toBe(true);
+    await ctrl.dispose();
+  });
+});

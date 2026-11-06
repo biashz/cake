@@ -151,6 +151,8 @@ function backend(): DesktopBackend {
     openSession: vi.fn(() => sessionPayload),
     renameSession: vi.fn(() => [session]),
     deleteSession: vi.fn(() => sessionPayload),
+    forkSession: vi.fn(() => sessionPayload),
+    exportSession: vi.fn(() => '/tmp/demo/.cake/exports/demo-session1.md'),
     run: vi.fn(async () => runResult),
     abort: vi.fn(),
     respondPermission: vi.fn(),
@@ -191,9 +193,35 @@ describe('desktop IPC handlers', () => {
     expect(fake.renameSession).toHaveBeenCalledWith('session-1', 'new name');
     expect(await handlers['session:delete']?.({ id: 'session-1' })).toEqual(sessionPayload);
     expect(fake.deleteSession).toHaveBeenCalledWith('session-1');
+    expect(await handlers['session:fork']?.({ id: 'session-1' })).toEqual(sessionPayload);
+    expect(fake.forkSession).toHaveBeenCalledWith('session-1');
+    expect(await handlers['session:export']?.({ id: 'session-1' })).toBe(
+      '/tmp/demo/.cake/exports/demo-session1.md',
+    );
+    expect(fake.exportSession).toHaveBeenCalledWith('session-1', undefined);
+    expect(await handlers['session:export']?.({ id: 'session-1', file: 'notes.md' })).toBe(
+      '/tmp/demo/.cake/exports/demo-session1.md',
+    );
+    expect(fake.exportSession).toHaveBeenCalledWith('session-1', 'notes.md');
     expect(await handlers['doctor:run']?.(undefined)).toEqual(doctorReport);
     expect(await handlers['context:layers']?.(undefined)).toEqual(contextPayload);
     expect(fake.runDoctor).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an export request that is not a session and a plain name', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+
+    for (const payload of [
+      { id: 'session-1', file: '' },
+      { id: 'session-1', file: 42 },
+      { id: '', file: 'notes.md' },
+      { file: 'notes.md' },
+      undefined,
+    ]) {
+      await expect(handlers['session:export']?.(payload)).rejects.toThrow(/Invalid/);
+    }
+    expect(fake.exportSession).not.toHaveBeenCalled();
   });
 
   it('accepts every declared doctor file target', async () => {

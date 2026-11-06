@@ -267,6 +267,10 @@ export interface CakeApi {
   renameSession(id: string, title: string): Promise<SessionInfo[]>;
   /** Deletes a session; when it was active, returns the session that becomes active. */
   deleteSession(id: string): Promise<SessionPayload | null>;
+  /** Branch a session and make the branch active; the transcript carries over. */
+  forkSession(id: string): Promise<SessionPayload>;
+  /** Write a session's transcript as Markdown; returns the path written. */
+  exportSession(id: string, file?: string): Promise<string>;
 
   run(sessionId: string, prompt: string): Promise<RunResult>;
   abort(): Promise<void>;

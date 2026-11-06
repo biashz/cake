@@ -11,5 +11,6 @@ playwright-report/
 .cake/sessions/
 .cake/cache/
 .cake/index/
+.cake/exports/
 release/
 scratch/

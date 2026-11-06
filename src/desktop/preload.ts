@@ -23,6 +23,8 @@ const api: CakeApi = {
   openSession: (id) => ipcRenderer.invoke('session:open', { id }),
   renameSession: (id, title) => ipcRenderer.invoke('session:rename', { id, title }),
   deleteSession: (id) => ipcRenderer.invoke('session:delete', { id }),
+  forkSession: (id) => ipcRenderer.invoke('session:fork', { id }),
+  exportSession: (id, file) => ipcRenderer.invoke('session:export', { id, file }),
 
   run: (sessionId, prompt) => ipcRenderer.invoke('agent:run', { sessionId, prompt }),
   abort: () => ipcRenderer.invoke('agent:abort'),

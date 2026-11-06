@@ -757,6 +757,28 @@ describe('Transcript', () => {
     expect(screen.getByTestId('entry-note').textContent).toContain('no embedding provider');
     expect(screen.queryByTestId('codebase-hit')).toBeNull();
   });
+
+  it('says which note wrote the file and where it went', () => {
+    render(
+      <Transcript
+        entries={[
+          { id: 0, role: 'user', text: '/export' },
+          {
+            id: 1,
+            role: 'note',
+            kind: 'export',
+            text: 'Markdown transcript → /repo/.cake/exports/repo-a1b2c3d4.md',
+          },
+        ]}
+        streaming=""
+        onInsertFile={vi.fn()}
+      />,
+    );
+
+    const note = screen.getByTestId('entry-note');
+    expect(note.querySelector('.entry-note-kind')?.textContent).toBe('export');
+    expect(note.textContent).toContain('repo-a1b2c3d4.md');
+  });
 });
 
 describe('RulesSection', () => {
@@ -1228,7 +1250,15 @@ describe('Sidebar', () => {
     updatedAt: Date.now(),
   };
 
-  const rail = (rows: McpServerRow[], over: Partial<SessionInfo> = {}) =>
+  const rail = (
+    rows: McpServerRow[],
+    over: Partial<SessionInfo> = {},
+    handlers: {
+      onForkSession?: (id: string) => void;
+      onExportSession?: (id: string) => void;
+      running?: boolean;
+    } = {},
+  ) =>
     render(
       <Sidebar
         version="0.1.0"
@@ -1236,7 +1266,7 @@ describe('Sidebar', () => {
         recents={[]}
         sessions={[{ ...session, ...over }]}
         activeSessionId="s1"
-        running={false}
+        running={handlers.running ?? false}
         pendingApprovals={0}
         mcpStatus={{
           servers: rows.filter((entry) => entry.connected).map((entry) => entry.name),
@@ -1249,6 +1279,8 @@ describe('Sidebar', () => {
         onNewSession={vi.fn()}
         onOpenSession={vi.fn()}
         onRenameSession={vi.fn()}
+        onForkSession={handlers.onForkSession ?? vi.fn()}
+        onExportSession={handlers.onExportSession ?? vi.fn()}
         onDeleteSession={vi.fn()}
         onOpenWorkspace={vi.fn()}
         onOpenRecent={vi.fn()}
@@ -1274,6 +1306,30 @@ describe('Sidebar', () => {
     const meta = screen.getByTitle('spend: no price set');
     expect(meta.textContent).toContain('no price set');
     expect(meta.textContent).not.toContain('$0.0000');
+  });
+
+  it('sends the session the button is standing on, not the open one', () => {
+    const onForkSession = vi.fn();
+    const onExportSession = vi.fn();
+    rail([rowOf('files')], { id: 's9' }, { onForkSession, onExportSession });
+
+    fireEvent.click(screen.getByLabelText('Fork session'));
+    fireEvent.click(screen.getByLabelText('Export session as Markdown'));
+
+    expect(onForkSession).toHaveBeenCalledWith('s9');
+    expect(onExportSession).toHaveBeenCalledWith('s9');
+  });
+
+  it('locks the row actions while a turn is running', () => {
+    const onForkSession = vi.fn();
+    rail([rowOf('files')], {}, { onForkSession, running: true });
+
+    for (const label of ['Fork session', 'Export session as Markdown']) {
+      const button = screen.getByLabelText(label) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      fireEvent.click(button);
+    }
+    expect(onForkSession).not.toHaveBeenCalled();
   });
 });
 

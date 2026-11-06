@@ -45,6 +45,8 @@ export function Sidebar({
   onNewSession,
   onOpenSession,
   onRenameSession,
+  onForkSession,
+  onExportSession,
   onDeleteSession,
   onOpenWorkspace,
   onOpenRecent,
@@ -62,6 +64,8 @@ export function Sidebar({
   onNewSession: () => void;
   onOpenSession: (id: string) => void;
   onRenameSession: (id: string, title: string) => void;
+  onForkSession: (id: string) => void;
+  onExportSession: (id: string) => void;
   onDeleteSession: (id: string) => void;
   onOpenWorkspace: () => void;
   onOpenRecent: (path: string) => void;
@@ -323,6 +327,26 @@ export function Sidebar({
                     )}
                     {!editing ? (
                       <div className="session-actions">
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label="Fork session"
+                          title="Fork session — branch this conversation into a new session"
+                          disabled={running}
+                          onClick={() => onForkSession(session.id)}
+                        >
+                          <Icon name="copy" size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label="Export session as Markdown"
+                          title="Export session as Markdown"
+                          disabled={running}
+                          onClick={() => onExportSession(session.id)}
+                        >
+                          <Icon name="file" size={13} />
+                        </button>
                         <button
                           type="button"
                           className="icon-button"

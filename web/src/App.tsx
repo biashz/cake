@@ -59,6 +59,7 @@ const MODE_NAMES: PermissionModeName[] = ['plan', 'default', 'acceptEdits', 'yol
 const HELP_TEXT = [
   'Commands',
   '/new  start a new session        /clear  clear into a fresh session',
+  '/fork  branch this conversation  /export [file]  write the transcript as Markdown',
   '/cost  session tokens and cost   /model  switch provider and model',
   '/mode [plan|default|acceptEdits|yolo]   /files  browse workspace files',
   '/mcp  MCP servers and diagnostics   /doctor  run checks   /help  this list',
@@ -471,6 +472,44 @@ export function App() {
     [applySession, refreshSessions],
   );
 
+  /**
+   * Branch a session and follow the branch. The transcript on screen does not
+   * change, because the branch starts with exactly that conversation.
+   */
+  const forkSession = useCallback(
+    async (id: string) => {
+      const api = window.cake;
+      if (!api || runningRef.current) return;
+      setBusy(true);
+      try {
+        applySession(await api.forkSession(id));
+        await refreshSessions();
+        setError(null);
+        setFocusToken((value) => value + 1);
+      } catch (err) {
+        setError(message(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [applySession, refreshSessions],
+  );
+
+  const exportSession = useCallback(
+    async (id: string, file?: string) => {
+      const api = window.cake;
+      if (!api) return;
+      try {
+        const written = await api.exportSession(id, file);
+        addEntry({ role: 'note', kind: 'export', text: `Markdown transcript → ${written}` });
+        setError(null);
+      } catch (err) {
+        setError(message(err));
+      }
+    },
+    [addEntry],
+  );
+
   const openFolder = useCallback(
     async (picked: string) => {
       const api = window.cake;
@@ -776,6 +815,16 @@ export function App() {
           }
           return true;
         }
+        case 'fork': {
+          const current = init?.workspace?.sessionId;
+          if (current) void forkSession(current);
+          return true;
+        }
+        case 'export': {
+          const current = init?.workspace?.sessionId;
+          if (current) void exportSession(current, arg || undefined);
+          return true;
+        }
         case 'files':
           openInspector('files');
           return true;
@@ -794,7 +843,17 @@ export function App() {
           return true;
       }
     },
-    [addEntry, changeMode, newSession, openInspector, runDoctorChecks, showCost],
+    [
+      addEntry,
+      changeMode,
+      exportSession,
+      forkSession,
+      init?.workspace?.sessionId,
+      newSession,
+      openInspector,
+      runDoctorChecks,
+      showCost,
+    ],
   );
 
   const submit = useCallback(async () => {
@@ -947,6 +1006,7 @@ export function App() {
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
     const hasWorkspace = Boolean(init?.workspace);
+    const activeId = init?.workspace?.sessionId;
     const actions: PaletteAction[] = [
       {
         id: 'new-session',
@@ -956,6 +1016,26 @@ export function App() {
         keywords: 'clear reset start over',
         disabled: !hasWorkspace || running,
         run: () => void newSession(),
+      },
+      {
+        id: 'fork-session',
+        label: 'Fork this session',
+        group: 'Session',
+        keywords: 'branch copy duplicate try again other approach',
+        disabled: !hasWorkspace || running,
+        run: () => {
+          if (activeId) void forkSession(activeId);
+        },
+      },
+      {
+        id: 'export-session',
+        label: 'Export transcript as Markdown',
+        group: 'Session',
+        keywords: 'save file write download share document md',
+        disabled: !hasWorkspace,
+        run: () => {
+          if (activeId) void exportSession(activeId);
+        },
       },
       {
         id: 'model',
@@ -1069,6 +1149,8 @@ export function App() {
     prefs.theme,
     newSession,
     openSession,
+    forkSession,
+    exportSession,
     showCost,
     openWorkspace,
     reloadMcp,
@@ -1122,6 +1204,8 @@ export function App() {
           onNewSession={() => void newSession()}
           onOpenSession={(id) => void openSession(id)}
           onRenameSession={(id, title) => void renameSession(id, title)}
+          onForkSession={(id) => void forkSession(id)}
+          onExportSession={(id) => void exportSession(id)}
           onDeleteSession={(id) => void deleteSession(id)}
           onOpenWorkspace={() => void openWorkspace()}
           onOpenRecent={(path) => void openFolder(path)}

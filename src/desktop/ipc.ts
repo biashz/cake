@@ -27,6 +27,8 @@ export interface DesktopBackend {
   openSession(id: string): SessionPayload;
   renameSession(id: string, title: string): SessionInfo[];
   deleteSession(id: string): SessionPayload | null;
+  forkSession(id: string): SessionPayload;
+  exportSession(id: string, file?: string): string;
   run(sessionId: string, prompt: string): Promise<RunResult>;
   abort(): void;
   respondPermission(id: string, decision: PermissionDecisionName): void;
@@ -70,6 +72,12 @@ const runSchema = z.object({
 
 const sessionSchema = z.object({
   id: z.string().min(1),
+});
+
+/** Shape only; keeping the write inside the workspace is the controller's job. */
+const exportSchema = z.object({
+  id: z.string().min(1),
+  file: z.string().min(1).max(300).optional(),
 });
 
 const permissionSchema = z.object({
@@ -181,6 +189,11 @@ export function createHandlers(backend: DesktopBackend): Record<string, Handler>
       return backend.renameSession(id, title);
     },
     'session:delete': async (payload) => backend.deleteSession(validate(sessionSchema, payload).id),
+    'session:fork': async (payload) => backend.forkSession(validate(sessionSchema, payload).id),
+    'session:export': async (payload) => {
+      const { id, file } = validate(exportSchema, payload);
+      return backend.exportSession(id, file);
+    },
     'agent:run': async (payload) => {
       const { sessionId, prompt } = validate(runSchema, payload);
       return backend.run(sessionId, prompt);

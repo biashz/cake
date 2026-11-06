@@ -19,6 +19,8 @@ export interface SessionMeta {
   unpricedTokens: number;
   createdAt: number;
   updatedAt: number;
+  /** Set when this session was forked from another; null for an original. */
+  parentId: string | null;
 }
 
 export interface CreateSessionInput {
@@ -39,6 +41,8 @@ interface SessionRow {
   unpriced_tokens: number;
   created_at: number;
   updated_at: number;
+  plan: string;
+  parent_id: string | null;
 }
 
 interface TurnUsageRow {
@@ -68,7 +72,13 @@ function toMeta(row: SessionRow): SessionMeta {
     unpricedTokens: row.unpriced_tokens,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    parentId: row.parent_id,
   };
+}
+
+/** Prefix, not suffix: an already-long title would otherwise truncate the marker away. */
+function forkTitle(title: string): string {
+  return title.trim() === '' ? '' : `fork: ${title}`.slice(0, 80);
 }
 
 function isTaskItem(value: unknown): value is TaskItem {
@@ -94,7 +104,9 @@ const SCHEMA = `
     unpriced_tokens INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    plan TEXT NOT NULL DEFAULT '[]'
+    plan TEXT NOT NULL DEFAULT '[]',
+    -- Set when the session was forked; NULL for an original.
+    parent_id TEXT
   );
   CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL,
@@ -138,6 +150,7 @@ export class SessionStore {
     const additions: [string, string][] = [
       ['plan', "TEXT NOT NULL DEFAULT '[]'"],
       ['unpriced_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+      ['parent_id', 'TEXT'],
     ];
     for (const [name, ddl] of additions) {
       if (!columns.has(name)) this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${ddl}`);
@@ -173,7 +186,55 @@ export class SessionStore {
       unpricedTokens: 0,
       createdAt: now,
       updatedAt: now,
+      parentId: null,
     };
+  }
+
+  /**
+   * Branch a conversation. The child starts with the parent's transcript and
+   * plan but none of its spend: the fork has billed nothing, and the parent is
+   * left exactly as it was.
+   */
+  fork(id: string): SessionMeta {
+    const parent = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as
+      | SessionRow
+      | undefined;
+    if (!parent) throw new Error(`Unknown session "${id}"`);
+    const now = Date.now();
+    const childId = randomUUID();
+    this.db.exec('BEGIN');
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO sessions (id, title, cwd, provider, model, created_at, updated_at, plan, parent_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          childId,
+          forkTitle(parent.title),
+          parent.cwd,
+          parent.provider,
+          parent.model,
+          now,
+          now,
+          parent.plan,
+          parent.id,
+        );
+      // One statement, so a fork can never exist with a half-copied transcript.
+      this.db
+        .prepare(
+          `INSERT INTO messages (session_id, seq, payload)
+           SELECT ?, seq, payload FROM messages WHERE session_id = ?`,
+        )
+        .run(childId, parent.id);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    const child = this.get(childId);
+    if (!child) throw new Error(`Forking session "${id}" did not persist`);
+    return child;
   }
 
   get(id: string): SessionMeta | undefined {

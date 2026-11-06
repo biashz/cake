@@ -13,6 +13,7 @@ import type { ModelSpec } from '../providers/types.js';
 import type { Embedder } from '../rag/embedder.js';
 import { buildToolCatalog } from '../runtime/toolset.js';
 import { runTurn } from '../runtime/turn.js';
+import { exportSessionMarkdown } from '../session/export.js';
 import type { SessionMeta, SessionStore } from '../session/store.js';
 import type {
   CakeTool,
@@ -59,6 +60,8 @@ export interface AppProps {
 const COMMANDS = [
   '/help            show this list',
   '/clear           start a new session',
+  '/fork            branch this conversation into a new session',
+  '/export [file]   write the transcript as Markdown',
   '/model <id>      switch model id (same provider)',
   '/cost            session token and cost totals',
   '/exit            quit (or Ctrl+C)',
@@ -126,6 +129,27 @@ export function App(props: AppProps) {
         setEntries([]);
         setStreaming('');
         addEntry({ role: 'info', text: `new session ${next.id.slice(0, 8)}` });
+        return;
+      }
+      case 'fork': {
+        const next = store.fork(session.id);
+        setSession(next);
+        historyRef.current = store.messages(next.id);
+        setPlan(store.plan(next.id));
+        addEntry({
+          role: 'info',
+          // The transcript on screen does not change: only where it goes next.
+          text: `forked → ${next.id.slice(0, 8)}${next.title ? ` (${next.title})` : ''}`,
+        });
+        return;
+      }
+      case 'export': {
+        try {
+          const file = exportSessionMarkdown(store, session.id, arg || undefined);
+          addEntry({ role: 'info', text: `transcript → ${file}` });
+        } catch (err) {
+          addEntry({ role: 'error', text: `[export] ${(err as Error).message}` });
+        }
         return;
       }
       case 'model': {

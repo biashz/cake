@@ -360,6 +360,89 @@ describe('SessionStore turn detail', () => {
   });
 });
 
+describe('SessionStore fork', () => {
+  it('copies the transcript and plan into a session that has spent nothing', () => {
+    const store = SessionStore.inMemory();
+    const parent = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    store.setTitleIfEmpty(parent.id, 'fix the parser');
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'fix the parser' },
+      { role: 'assistant', content: [{ type: 'text', text: 'on it' }] },
+    ];
+    store.saveMessages(parent.id, messages);
+    store.savePlan(parent.id, [{ id: 1, subject: 'read the tokenizer', status: 'completed' }]);
+    store.addTurnUsage(parent.id, [line()]);
+
+    const child = store.fork(parent.id);
+
+    expect(child.id).not.toBe(parent.id);
+    expect(child.parentId).toBe(parent.id);
+    expect(child.title).toBe('fork: fix the parser');
+    expect(child.cwd).toBe('/repo');
+    expect(store.messages(child.id)).toEqual(messages);
+    expect(store.plan(child.id)).toEqual([
+      { id: 1, subject: 'read the tokenizer', status: 'completed' },
+    ]);
+    // The fork has billed nothing, and the parent keeps what it paid for.
+    expect(child.totalTokens).toBe(0);
+    expect(child.costUsd).toBe(0);
+    expect(store.turnUsage(child.id)).toEqual([]);
+    expect(store.get(parent.id)?.totalTokens).toBe(150);
+    store.close();
+  });
+
+  it('lets the first prompt of an untitled fork name it', () => {
+    const store = SessionStore.inMemory();
+    const parent = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+
+    const child = store.fork(parent.id);
+    expect(child.title).toBe('');
+
+    store.setTitleIfEmpty(child.id, 'try the other parser');
+    expect(store.get(child.id)?.title).toBe('try the other parser');
+    store.close();
+  });
+
+  it('keeps the conversation when the parent is deleted', () => {
+    const store = SessionStore.inMemory();
+    const parent = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    store.saveMessages(parent.id, [
+      { role: 'user', content: 'keep me' },
+      { role: 'assistant', content: [{ type: 'text', text: 'kept' }] },
+    ]);
+
+    const child = store.fork(parent.id);
+    store.delete(parent.id);
+
+    expect(store.get(parent.id)).toBeUndefined();
+    expect(store.messages(child.id)).toHaveLength(2);
+    expect(store.get(child.id)?.parentId).toBe(parent.id);
+    store.close();
+  });
+
+  it('refuses to fork a session that is not there', () => {
+    const store = SessionStore.inMemory();
+    expect(() => store.fork('nope')).toThrow(/Unknown session "nope"/);
+    store.close();
+  });
+
+  it('carries the transcript across a reopen', () => {
+    const file = defaultSessionFile(dir);
+    const store = SessionStore.open(file);
+    const parent = store.create({ cwd: dir, provider: 'anthropic', model: 'm' });
+    store.saveMessages(parent.id, [{ role: 'user', content: 'persisted before forking' }]);
+    const child = store.fork(parent.id);
+    store.close();
+
+    const reopened = SessionStore.open(file);
+    expect(reopened.messages(child.id)).toEqual([
+      { role: 'user', content: 'persisted before forking' },
+    ]);
+    expect(reopened.get(child.id)?.parentId).toBe(parent.id);
+    reopened.close();
+  });
+});
+
 describe('SessionStore migration', () => {
   it('opens a database written before the plan column', () => {
     // Not defaultSessionFile: a legacy file is one cake did not create.
@@ -396,6 +479,9 @@ describe('SessionStore migration', () => {
     store.savePlan('old', [{ id: 1, subject: 'carried on', status: 'in_progress' }]);
     expect(store.plan('old')).toEqual([{ id: 1, subject: 'carried on', status: 'in_progress' }]);
     expect(store.messages('old')).toEqual([]);
+    // The added parent_id column reads as an original, and an old row can be forked.
+    expect(store.get('old')?.parentId).toBeNull();
+    expect(store.fork('old').parentId).toBe('old');
     store.close();
   });
 });
