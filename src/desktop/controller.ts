@@ -8,6 +8,7 @@ import {
   loadProjectSections,
   type ProjectSection,
 } from '../core/context.js';
+import { buildCostBoard } from '../core/cost-board.js';
 import type { AgentEvent } from '../core/events.js';
 import {
   BUILTIN_PRICING,
@@ -360,10 +361,7 @@ export class WorkspaceController implements DesktopBackend {
 
       active.store.setTitleIfEmpty(sessionId, prompt);
       active.store.saveMessages(sessionId, result.messages);
-      active.store.addUsage(sessionId, {
-        totalTokens: result.usage.totalTokens,
-        costUsd: result.costUsd,
-      });
+      active.store.addTurnUsage(sessionId, result.lines);
       active.session = active.store.get(sessionId) ?? active.session;
       return {
         sessionId,
@@ -424,6 +422,14 @@ export class WorkspaceController implements DesktopBackend {
     await setPricingEntry(active.cwd, key, rates);
     active.pricing = loadConfig({ cwd: active.cwd, env: this.env, homeDir: this.homeDir }).pricing;
     return this.snapshot();
+  }
+
+  /**
+   * The cost tab on its own, so a finished turn or a switched session can refresh
+   * the board without rebuilding every other panel.
+   */
+  getCost(): Promise<CostPayload> {
+    return Promise.resolve(this.costSnapshot(this.modelHandle(), this.active));
   }
 
   /**
@@ -556,14 +562,8 @@ export class WorkspaceController implements DesktopBackend {
 
   private snapshot(): InitPayload {
     const active = this.active;
-    const providerId = active?.model.provider ?? this.defaultProviderId();
-    const provider = this.registry.get(providerId);
-    const fallbackModelId =
-      providerId === this.config.provider && this.config.model
-        ? this.config.model
-        : provider.defaultModelId;
     const providers = this.providerSummaries();
-    const model: ModelHandle = active?.model ?? { provider: providerId, modelId: fallbackModelId };
+    const model = this.modelHandle();
     return {
       version: VERSION,
       workspace: active ? { cwd: active.cwd, sessionId: active.session.id } : null,
@@ -577,20 +577,18 @@ export class WorkspaceController implements DesktopBackend {
       }),
       mcpStatus: this.mcpStatus(),
       missingKeys: providers.filter((item) => !item.hasKey).map((item) => item.id),
-      cost: this.costSnapshot(model, active?.pricing ?? {}, active?.cwd),
+      cost: this.costSnapshot(model, active),
       plan: active ? active.store.plan(active.session.id) : [],
     };
   }
 
   /**
-   * The rate card as the Inspector shows it: what answers for the open model,
-   * which config rows override it, and the built-in card behind them.
+   * The rate card and the spend board as the Inspector shows them: what answers
+   * for the open model, what each turn, model and child agent cost, and what the
+   * whole workspace cost across its sessions.
    */
-  private costSnapshot(
-    model: ModelHandle,
-    overrides: PricingOverrides,
-    cwd: string | undefined,
-  ): CostPayload {
+  private costSnapshot(model: ModelHandle, active: ActiveWorkspace | undefined): CostPayload {
+    const overrides = active?.pricing ?? {};
     const match = resolvePricing(model, overrides);
     const row = (pattern: string, pricing: Pricing): PricingRow => ({
       pattern,
@@ -605,8 +603,25 @@ export class WorkspaceController implements DesktopBackend {
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([pattern, pricing]) => row(pattern, pricing)),
       builtin: BUILTIN_PRICING.map((entry) => row(entry.pattern, entry.pricing)),
-      configFile: cwd ? configPaths(cwd).project : null,
+      configFile: active ? configPaths(active.cwd).project : null,
+      board: active ? buildCostBoard(active.store.turnUsage(active.session.id)) : null,
+      rollup: active
+        ? { costUsd: active.session.costUsd, totalTokens: active.session.totalTokens }
+        : null,
+      workspace: active ? active.store.workspaceUsage(active.cwd) : null,
     };
+  }
+
+  /** The model the panels price against: the open session's, or the configured default. */
+  private modelHandle(): ModelHandle {
+    const active = this.active;
+    const providerId = active?.model.provider ?? this.defaultProviderId();
+    const provider = this.registry.get(providerId);
+    const fallbackModelId =
+      providerId === this.config.provider && this.config.model
+        ? this.config.model
+        : provider.defaultModelId;
+    return active?.model ?? { provider: providerId, modelId: fallbackModelId };
   }
 
   private providerSummaries(): ProviderSummary[] {

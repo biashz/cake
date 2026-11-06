@@ -1,5 +1,5 @@
-import { formatCost } from '../../../src/core/cost.js';
-import type { SessionInfo } from '../../../src/desktop/api.js';
+import { spendLabel } from '../../../src/core/cost.js';
+import type { CostPayload, SessionInfo } from '../../../src/desktop/api.js';
 import { nextTheme, THEME_LABEL, type ThemeName } from '../prefs';
 import { Icon, type IconName } from './Icons';
 
@@ -7,24 +7,34 @@ const NEXT_ICON: Record<ThemeName, IconName> = { flour: 'sun', cocoa: 'moon', au
 
 export function SessionHeader({
   session,
+  cost,
   railOpen,
   inspectorOpen,
   theme,
+  onShowCost,
   onToggleRail,
   onToggleInspector,
   onToggleTheme,
   onOpenPalette,
 }: {
   session: SessionInfo | null;
+  cost: CostPayload;
   railOpen: boolean;
   inspectorOpen: boolean;
   theme: ThemeName;
+  onShowCost: () => void;
   onToggleRail: () => void;
   onToggleInspector: () => void;
   onToggleTheme: () => void;
   onOpenPalette: () => void;
 }) {
   const title = session?.title || 'Untitled session';
+  // The session row holds the spend; the board says how much of it no rate covers.
+  const spend = spendLabel(
+    cost.rollup?.costUsd ?? session?.costUsd ?? 0,
+    cost.board?.totals.unpricedTokens ?? 0,
+  );
+  const tokens = (session?.totalTokens ?? 0).toLocaleString();
 
   return (
     <header className="session-header">
@@ -51,9 +61,17 @@ export function SessionHeader({
       </div>
 
       <div className="header-actions">
-        <span className="chip cost-chip mono" title="Session cost">
-          {formatCost(session?.costUsd ?? 0)}
-        </span>
+        <button
+          type="button"
+          className="chip cost-chip mono"
+          data-testid="cost-chip"
+          aria-label={`Session spend ${spend} from ${tokens} tokens. Show the cost board.`}
+          title="Session spend · open the cost board"
+          onClick={onShowCost}
+        >
+          <span>{spend}</span>
+          <span className="cost-chip-tokens">{tokens}</span>
+        </button>
 
         <button
           type="button"

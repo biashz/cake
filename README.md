@@ -181,18 +181,20 @@ cake "@codebase 这个仓库在哪里处理 token 刷新？"
 ## 会话与观测
 
 - 会话历史存 `.cake/sessions/cake.db`，`cake -c` 续跑最近一次
+- 每一轮的开销按行存进 `.cake/sessions/cake.db`（哪个模型、主流程还是哪个子 agent、有没有费率），桌面端 Cost 面板、CLI `/cost` 和顶部成本标签读同一份数据；没有费率的模型只记 token 并显示"无价格 / no price set"，绝不显示 `$0.0000`
 - 历史接近上下文窗口时自动压缩（保留摘要 + 近期消息）
 - `CAKE_TRACE=1 cake "..."` 会把工具调用/结果/错误写进 `.cake/logs/run-*.jsonl`（本地文件，默认关闭，不上传任何数据）
 
 ## 桌面端界面
 
-Electron 窗口是三栏布局：左侧会话栏（搜索 / 重命名 / 删除会话、切换工作区），中间对话区（审批卡、工具卡片与 diff、复制消息、跳转最新），右侧 inspector（Changes / Context / Files）。
+Electron 窗口是三栏布局：左侧会话栏（搜索 / 重命名 / 删除会话、切换工作区），中间对话区（审批卡、工具卡片与 diff、复制消息、跳转最新），右侧 inspector（Changes / Plan / Context / Cost / Files）。
 
 - 输入框工具栏整合 provider/model 切换、权限模式与上下文占比（蛋糕切片仪表），模型与模式菜单向上展开
 - 顶部保留命令面板、夜间 / 羊皮纸主题（默认羊皮纸浅色，选择会记住）与 inspector 开关
 - `Ctrl K` 命令面板，`Ctrl N` 新会话，`Ctrl B` 折叠会话栏，`Ctrl J` 折叠 inspector
 - 输入框支持 `/` 命令（`/help`、`/model`、`/mode`、`/files`、`/mcp`、`/doctor`、`/cost`、`/new`）和 `@` 文件补全
 - inspector 的 Diagnostics 不只报告问题：每条警告 / 失败都带一个可执行动作——粘贴 provider 密钥（写入 `~/.cake/config.json` 并立刻重建 provider 注册表与 embedding）、重建代码索引、重连 MCP、打开对应配置文件（文件缺失时先写入合法空模板）、在文件管理器中定位会话库或索引库；动作完成后自动重跑检查。CLI 的 `--doctor` 仍只读，不改动任何东西
+- inspector 的 Cost 把一次会话的开销拆开列：按轮次（可展开到每个模型一行，子 agent 的开销挂在引起它的那一轮里）、按模型、按工作（主流程 / 某个子 agent），最后给出整个工作区跨会话的合计。没有费率的模型显示"no price set"或"$X + unpriced"，同一规则也用在顶栏成本标签、会话栏和运行读数上；费率卡片里点"Set rate"会把该模型的 pattern 填进编辑表单
 - 窄窗口下会话栏与 inspector 变为浮层，一次只显示一个
 
 ## 打包二进制

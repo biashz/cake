@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { estimateCost, formatCost, normalizeUsage } from '../src/core/cost.js';
+import {
+  costLine,
+  estimateCost,
+  formatCost,
+  normalizeUsage,
+  spendLabel,
+  unpricedTokens,
+} from '../src/core/cost.js';
 
 describe('normalizeUsage', () => {
   it('coerces undefined to zero', () => {
@@ -86,5 +93,67 @@ describe('formatCost', () => {
 
   it('uses 3 decimals for larger costs', () => {
     expect(formatCost(1.2)).toBe('$1.200');
+  });
+});
+
+describe('spendLabel', () => {
+  it('says no price set rather than $0.0000 when nothing had a rate', () => {
+    expect(spendLabel(0, 2000)).toBe('no price set');
+  });
+
+  it('keeps the known part and marks the rest when only some tokens had a rate', () => {
+    expect(spendLabel(0.02, 2000)).toBe('$0.020 + unpriced');
+  });
+
+  it('falls back to the plain cost when every token was priced', () => {
+    expect(spendLabel(0)).toBe('$0.0000');
+    expect(spendLabel(0.0012, 0)).toBe('$0.0012');
+  });
+});
+
+describe('costLine', () => {
+  const usage = { inputTokens: 100, outputTokens: 50, totalTokens: 150 };
+
+  it('marks a model the card knows as priced', () => {
+    const line = costLine({ provider: 'anthropic', modelId: 'claude-sonnet-4-5' }, usage, 0.001, {
+      scope: 'main',
+    });
+    expect(line).toMatchObject({ scope: 'main', priced: true, costUsd: 0.001 });
+    expect(line.agentType).toBeUndefined();
+  });
+
+  it('marks an unknown model as unpriced even though its cost is 0', () => {
+    const line = costLine({ provider: 'ollama', modelId: 'llama3' }, usage, 0, {
+      scope: 'subagent',
+      agentType: 'explore',
+    });
+    expect(line).toMatchObject({ scope: 'subagent', agentType: 'explore', priced: false });
+  });
+
+  it('follows a workspace rate for a model the card does not know', () => {
+    const priced = costLine({ provider: 'ollama', modelId: 'llama3' }, usage, 1, {
+      scope: 'main',
+      pricing: { 'ollama/llama3': { inputPer1M: 2, outputPer1M: 2 } },
+    });
+    expect(priced.priced).toBe(true);
+  });
+});
+
+describe('unpricedTokens', () => {
+  it('counts only the tokens of lines without a rate', () => {
+    const priced = costLine(
+      { provider: 'anthropic', modelId: 'opus-4-5' },
+      { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+      0.1,
+      { scope: 'main' },
+    );
+    const free = costLine(
+      { provider: 'ollama', modelId: 'llama3' },
+      { inputTokens: 40, outputTokens: 60, totalTokens: 100 },
+      0,
+      { scope: 'subagent', agentType: 'plan' },
+    );
+    expect(unpricedTokens([priced, free])).toBe(100);
+    expect(unpricedTokens([priced])).toBe(0);
   });
 });

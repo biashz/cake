@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { formatCost } from '../../../src/core/cost.js';
+import { spendLabel } from '../../../src/core/cost.js';
 import type { McpStatus, SessionInfo } from '../../../src/desktop/api.js';
 import { Icon } from './Icons';
 
@@ -311,9 +311,12 @@ export function Sidebar({
                           <span className="session-title">
                             {session.title || 'Untitled session'}
                           </span>
-                          <span className="session-meta mono">
+                          <span
+                            className="session-meta mono"
+                            title={`spend: ${spendLabel(session.costUsd, session.unpricedTokens)}`}
+                          >
                             {session.model} · {relativeTime(session.updatedAt)} ·{' '}
-                            {formatCost(session.costUsd)}
+                            {spendLabel(session.costUsd, session.unpricedTokens)}
                           </span>
                         </span>
                       </button>

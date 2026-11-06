@@ -12,7 +12,7 @@ import type { ModelProvider } from '../src/providers/types.js';
 import { bashTool } from '../src/tools/bash.js';
 import { readTool } from '../src/tools/read.js';
 import { buildToolSet } from '../src/tools/registry.js';
-import type { CakeTool, ToolContext } from '../src/tools/types.js';
+import type { CakeTool, NestedUsage, ToolContext } from '../src/tools/types.js';
 import { writeTool } from '../src/tools/write.js';
 
 function usage(input: number, output: number) {
@@ -69,7 +69,7 @@ const baseTools = [readTool, writeTool, bashTool] as CakeTool[];
 
 let cwd: string;
 let events: AgentEvent[];
-let recorded: Array<{ usage: TokenUsage; costUsd: number }>;
+let recorded: Array<{ usage: TokenUsage; costUsd: number; source?: NestedUsage }>;
 
 function context(callId?: string): ToolContext {
   return {
@@ -78,7 +78,7 @@ function context(callId?: string): ToolContext {
     askPermission: async () => 'allow',
     log: () => {},
     ...(callId === undefined ? {} : { callId }),
-    onUsage: (usage, costUsd) => recorded.push({ usage, costUsd }),
+    onUsage: (usage, costUsd, source) => recorded.push({ usage, costUsd, source }),
   };
 }
 
@@ -121,6 +121,11 @@ describe('subagents', () => {
     expect(output).toContain('Found alpha in note.txt.');
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.usage).toEqual({ inputTokens: 30, outputTokens: 5, totalTokens: 35 });
+    // The source names which child spent it, so the board can bill that model.
+    expect(recorded[0]?.source).toMatchObject({
+      agentType: 'explore',
+      model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+    });
 
     const firstCall = model.doStreamCalls[0];
     expect(firstCall?.prompt[0]).toMatchObject({ role: 'system' });

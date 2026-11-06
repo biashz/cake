@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type { DiffResult } from '../core/diff.js';
 import type { TokenUsage } from '../core/events.js';
+import type { ModelSpec } from '../providers/types.js';
 
 /** Permission class a tool falls into; drives approval policy. */
 export type PermissionClass = 'read' | 'write' | 'shell';
@@ -37,6 +38,13 @@ export interface TaskItem {
   status: TaskStatus;
 }
 
+/** Which child run a nested usage report came from. */
+export interface NestedUsage {
+  /** The model the child actually ran, which can differ from the parent's. */
+  model: ModelSpec;
+  agentType: string;
+}
+
 export interface ToolContext {
   cwd: string;
   askPermission: AskPermission;
@@ -52,7 +60,7 @@ export interface ToolContext {
   /** Report the whole list after a change, so a UI can show the plan live. */
   onPlan?: (tasks: TaskItem[]) => void;
   /** Report usage from nested work (subagents) so callers can bill the whole run. */
-  onUsage?: (usage: TokenUsage, costUsd: number) => void;
+  onUsage?: (usage: TokenUsage, costUsd: number, source?: NestedUsage) => void;
 }
 
 export interface CakeTool<Args = unknown, Result = unknown> {

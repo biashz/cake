@@ -4,7 +4,7 @@ import { render } from 'ink';
 import { App } from './cli/App.js';
 import { loadConfig } from './config/config.js';
 import { buildSystemPrompt, loadProjectInstructions } from './core/context.js';
-import { formatCost } from './core/cost.js';
+import { formatCost, spendLabel, unpricedTokens } from './core/cost.js';
 import type { AgentEvent } from './core/events.js';
 import type { PricingOverrides } from './core/pricing.js';
 import { formatDoctor, runDoctor } from './diagnostics/doctor.js';
@@ -295,14 +295,14 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
     });
     process.stdout.write('\n');
     process.stderr.write(
-      `[tokens] in=${result.usage.inputTokens} out=${result.usage.outputTokens} cost=${formatCost(result.costUsd)}\n`,
+      `[tokens] in=${result.usage.inputTokens} out=${result.usage.outputTokens} cost=${spendLabel(
+        result.costUsd,
+        unpricedTokens(result.lines),
+      )}\n`,
     );
     store.setTitleIfEmpty(session.id, prompt);
     store.saveMessages(session.id, result.messages);
-    store.addUsage(session.id, {
-      totalTokens: result.usage.totalTokens,
-      costUsd: result.costUsd,
-    });
+    store.addTurnUsage(session.id, result.lines);
     process.stderr.write(`[session] ${session.id}\n`);
   } catch (err) {
     process.stdout.write('\n');

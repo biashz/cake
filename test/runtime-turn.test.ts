@@ -180,6 +180,125 @@ describe('runTurn', () => {
     ]);
   });
 
+  it('keeps one cost line per model, the session’s own first', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolCallStream('metered', {}), textStream('Done.')],
+    });
+    const { ctx } = context();
+
+    const result = await runTurn({
+      cwd,
+      registry: registryFor(model),
+      model: MODEL,
+      system: 'be brief',
+      mode: 'yolo',
+      rules: { allow: [], deny: [] },
+      tools: [meteredTool(() => {})],
+      history: [],
+      prompt: 'go',
+      maxContext: 200_000,
+      ctx,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    // The main call leads even though the nested one finished first.
+    expect(result.lines.map((line) => line.scope)).toEqual(['main', 'subagent']);
+    expect(result.lines[0]).toMatchObject({
+      model: MODEL,
+      usage: { totalTokens: 19 },
+      priced: true,
+    });
+    expect(result.lines[1]).toMatchObject({
+      model: MODEL,
+      usage: { totalTokens: 10 },
+      costUsd: 0.5,
+      priced: true,
+    });
+    expect(result.lines[1]?.agentType).toBeUndefined();
+    // The folded totals are the same money, seen from the other side.
+    expect(result.lines.reduce((sum, line) => sum + line.costUsd, 0)).toBeCloseTo(
+      result.costUsd,
+      10,
+    );
+  });
+
+  it('bills nested work under the model and agent that caused it', async () => {
+    const child = { provider: 'deepseek', modelId: 'deepseek-chat' } as const;
+    const nestedTool: CakeTool = {
+      name: 'metered',
+      description: 'reports nested usage from another model',
+      permission: 'read',
+      inputSchema: z.object({}),
+      summarize: () => 'nested',
+      matchTarget: () => 'nested',
+      async execute(_args, toolCtx) {
+        toolCtx.onUsage?.(
+          { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+          0.28,
+          { model: child, agentType: 'Explore' },
+        );
+        return 'nested';
+      },
+    };
+    const model = new MockLanguageModelV4({
+      doStream: [toolCallStream('metered', {}), textStream('Done.')],
+    });
+    const { ctx } = context();
+
+    const result = await runTurn({
+      cwd,
+      registry: registryFor(model),
+      model: MODEL,
+      system: 'sys',
+      mode: 'yolo',
+      rules: { allow: [], deny: [] },
+      tools: [nestedTool],
+      history: [],
+      prompt: 'go',
+      maxContext: 200_000,
+      ctx,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    expect(result.lines[1]).toMatchObject({
+      model: child,
+      scope: 'subagent',
+      agentType: 'Explore',
+      priced: true,
+    });
+  });
+
+  it('marks a line unpriced when cake has no rate for that model', async () => {
+    // A real provider the registry knows, with a model id no card row answers.
+    const mystery = { provider: 'anthropic', modelId: 'claude-mystery-1' } as const;
+    const model = new MockLanguageModelV4({
+      doStream: [toolCallStream('metered', {}), textStream('Done.')],
+    });
+    const { ctx } = context();
+
+    const result = await runTurn({
+      cwd,
+      registry: registryFor(model),
+      // A model with no card row: its tokens are counted, its cost is not known.
+      model: mystery,
+      system: 'sys',
+      mode: 'yolo',
+      rules: { allow: [], deny: [] },
+      tools: [meteredTool(() => {})],
+      history: [],
+      prompt: 'go',
+      maxContext: 200_000,
+      ctx,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    expect(result.costUsd).toBe(0.5);
+    expect(result.lines.map((line) => line.priced)).toEqual([false, false]);
+  });
+
   it('expands @file mentions before sending the prompt', async () => {
     await writeFile(path.join(cwd, 'note.txt'), 'alpha content\n', 'utf8');
     const model = new MockLanguageModelV4({ doStream: [textStream('ok')] });

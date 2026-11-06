@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { formatCost } from '../../../src/core/cost.js';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { spendLabel } from '../../../src/core/cost.js';
+import type { CostGroup, CostRow, CostTurn } from '../../../src/core/cost-board.js';
 import { planProgress } from '../../../src/core/plan.js';
 import type { Pricing } from '../../../src/core/pricing.js';
 import type {
@@ -809,9 +810,93 @@ function RateTable({
   );
 }
 
+/** Turns are listed by clock time, not by the moment's full timestamp. */
+function shortTime(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/** One billed model call inside a turn: who ran it, what it cost. */
+function BoardLine({ row }: { row: CostRow }) {
+  return (
+    <div className="board-line" data-testid="cost-line">
+      <span className="board-who">
+        {row.scope === 'main'
+          ? 'Main model'
+          : row.agentType
+            ? `Subagent: ${row.agentType}`
+            : 'Nested work'}
+      </span>
+      <span className="board-model mono">{`${row.provider}/${row.model}`}</span>
+      <span className="board-value mono">{tokenLabel(row.totalTokens)}</span>
+      <span className="board-value mono">
+        {spendLabel(row.costUsd, row.priced ? 0 : row.totalTokens)}
+      </span>
+    </div>
+  );
+}
+
+function BoardTurn({ turn }: { turn: CostTurn }) {
+  return (
+    <details className="board-turn" data-testid="cost-turn-row">
+      <summary>
+        <span className="board-num mono">{turn.turn}</span>
+        <span className="board-when mono">{shortTime(turn.occurredAt)}</span>
+        <span className="board-value mono">{tokenLabel(turn.totalTokens)}</span>
+        <span className="board-value mono">{spendLabel(turn.costUsd, turn.unpricedTokens)}</span>
+      </summary>
+      <div className="board-lines">
+        {turn.rows.map((row) => (
+          <BoardLine
+            key={`${row.provider}/${row.model}/${row.scope}/${row.agentType}/${row.seq}`}
+            row={row}
+          />
+        ))}
+      </div>
+    </details>
+  );
+}
+
 /**
- * The rate card for the open model, and the editor that overrides it. Saved rates
- * live in this workspace's `.cake/config.json` so each project prices what it uses.
+ * A spend group. `onPriceModel` only appears for model groups, whose key is
+ * already a `provider/model` pattern; a work group has nothing to price.
+ */
+function BoardGroup({
+  group,
+  onPriceModel,
+}: {
+  group: CostGroup;
+  onPriceModel?: (pattern: string) => void;
+}) {
+  const unpriced = group.unpricedTokens > 0;
+  return (
+    <div className="board-row" data-testid="cost-group-row">
+      <span className="board-who">{group.label}</span>
+      <span className="board-value mono" title={`${group.totalTokens} tokens`}>
+        {tokenLabel(group.totalTokens)}
+      </span>
+      <span className="board-value mono" title={`${group.turns} turn(s)`}>
+        {spendLabel(group.costUsd, group.unpricedTokens)}
+      </span>
+      <span className="board-slot">
+        {onPriceModel && unpriced ? (
+          <button
+            type="button"
+            className="text-button"
+            title={`No rate for ${group.key}; set one to estimate its spend`}
+            onClick={() => onPriceModel(group.key)}
+          >
+            Set rate
+          </button>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * What the session and the workspace spent, broken down by turn, model and nested
+ * work, above the rate card that prices it. Saved rates live in this workspace's
+ * `.cake/config.json`, so each project prices what it uses.
  */
 export function CostPanel({
   cost,
@@ -824,11 +909,21 @@ export function CostPanel({
   const [input, setInput] = useState(cost.effective ? String(cost.effective.inputPer1M) : '');
   const [output, setOutput] = useState(cost.effective ? String(cost.effective.outputPer1M) : '');
   const [pending, setPending] = useState(false);
+  const patternInput = useRef<HTMLInputElement>(null);
 
   const rates = parseRates(input, output);
   const key = pattern.trim();
   // A bare word would price the provider's whole namespace, so ask for provider/model.
   const shapeOk = key.includes('/');
+
+  /** From a board row that has no rate: put its model in the form and let it be typed. */
+  const priceModel = (modelKey: string) => {
+    setPattern(modelKey);
+    setInput('');
+    setOutput('');
+    // Focusing alone brings the form into view, in the panel and in the OS.
+    patternInput.current?.focus();
+  };
 
   const write = async (next: Pricing | null, at: string) => {
     setPending(true);
@@ -839,8 +934,140 @@ export function CostPanel({
     }
   };
 
+  const board = cost.board;
+  const totals = board?.totals;
+  const billed = (totals?.totalTokens ?? 0) > 0 || (cost.rollup?.totalTokens ?? 0) > 0;
+  // The session's own total can exceed the rows: turns billed before per-turn
+  // detail was saved still cost something.
+  const detailGap =
+    cost.rollup !== null && totals !== undefined && cost.rollup.totalTokens > totals.totalTokens;
+
   return (
     <div className="cost-panel" data-testid="cost-panel">
+      <section className="inspect-section">
+        <div className="section-heading-row">
+          <h3 className="inspect-heading">Session spend</h3>
+          {totals && totals.turns > 0 ? (
+            <span className="inspect-hint mono">{`${totals.turns} turn${
+              totals.turns === 1 ? '' : 's'
+            }`}</span>
+          ) : null}
+        </div>
+        {billed ? (
+          <>
+            <p className="cost-spend mono" data-testid="cost-spend">
+              {spendLabel(
+                totals?.costUsd ?? cost.rollup?.costUsd ?? 0,
+                totals?.unpricedTokens ?? 0,
+              )}
+            </p>
+            {totals && totals.totalTokens > 0 ? (
+              <dl className="stat-grid">
+                <div>
+                  <dt>Input</dt>
+                  <dd className="mono">{tokenLabel(totals.inputTokens)}</dd>
+                </div>
+                <div>
+                  <dt>Output</dt>
+                  <dd className="mono">{tokenLabel(totals.outputTokens)}</dd>
+                </div>
+                <div>
+                  <dt>Without a rate</dt>
+                  <dd className={`mono${totals.unpricedTokens > 0 ? ' is-unpriced' : ''}`}>
+                    {tokenLabel(totals.unpricedTokens)}
+                  </dd>
+                </div>
+              </dl>
+            ) : null}
+            {detailGap && cost.rollup ? (
+              <p className="inspect-hint" data-testid="cost-detail-note">
+                {`Per-turn detail covers ${tokenLabel(totals?.totalTokens ?? 0)} of the ${tokenLabel(
+                  cost.rollup.totalTokens,
+                )} this session used; earlier turns saved only the total.`}
+              </p>
+            ) : null}
+            {(totals?.turns ?? 0) === 0 ? (
+              <p className="inspect-hint">
+                No per-turn detail saved, so the total covers turns cake billed before this session
+                kept rows.
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="inspect-hint">
+            Nothing billed yet in this session. Spend appears here turn by turn.
+          </p>
+        )}
+      </section>
+
+      {board && board.turns.length > 0 ? (
+        <section className="inspect-section">
+          <div className="section-heading-row">
+            <h3 className="inspect-heading">By turn</h3>
+            <span className="inspect-hint">newest first</span>
+          </div>
+          <div className="board-list">
+            {board.turns.map((turn) => (
+              <BoardTurn key={turn.turn} turn={turn} />
+            ))}
+          </div>
+          {board.truncated ? (
+            <p className="inspect-hint" data-testid="cost-truncated">
+              {`Older than the ${board.turns.length} turns shown is grouped but not listed.`}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
+      {board && board.models.length > 0 ? (
+        <section className="inspect-section">
+          <h3 className="inspect-heading">By model</h3>
+          <div className="board-list">
+            {board.models.map((group) => (
+              <BoardGroup key={group.key} group={group} onPriceModel={priceModel} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {board && board.work.length > 0 ? (
+        <section className="inspect-section">
+          <h3 className="inspect-heading">By work</h3>
+          <div className="board-list">
+            {board.work.map((group) => (
+              <BoardGroup key={group.key} group={group} />
+            ))}
+          </div>
+          <p className="inspect-hint">
+            Nested work is what child agents used; it is part of the same turn, not an extra bill.
+          </p>
+        </section>
+      ) : null}
+
+      <section className="inspect-section">
+        <h3 className="inspect-heading">This workspace</h3>
+        {cost.workspace ? (
+          <dl className="stat-grid" data-testid="cost-workspace">
+            <div>
+              <dt>Sessions</dt>
+              <dd className="mono">{cost.workspace.sessions}</dd>
+            </div>
+            <div>
+              <dt>Total spend</dt>
+              <dd className="mono">
+                {spendLabel(cost.workspace.costUsd, cost.workspace.unpricedTokens)}
+              </dd>
+            </div>
+            <div>
+              <dt>Total tokens</dt>
+              <dd className="mono">{tokenLabel(cost.workspace.totalTokens)}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="inspect-hint">Nothing to total until a workspace is open.</p>
+        )}
+      </section>
+
       <section className="inspect-section">
         <h3 className="inspect-heading">Rate in use</h3>
         <p className="cost-model mono">
@@ -887,6 +1114,7 @@ export function CostPanel({
             <label className="rate-field">
               <span>Pattern</span>
               <input
+                ref={patternInput}
                 value={pattern}
                 onChange={(event) => setPattern(event.target.value)}
                 placeholder="anthropic/sonnet"
@@ -1189,11 +1417,12 @@ export function Inspector({
                 </div>
                 <div>
                   <dt>Session cost</dt>
-                  {/* An unpriced model's zero is unknown, not free. */}
+                  {/* Tokens with no rate are counted, so their $0 is never read as free. */}
                   <dd className="mono">
-                    {init.cost.effective || (session?.costUsd ?? 0) > 0
-                      ? formatCost(session?.costUsd ?? 0)
-                      : 'no price set'}
+                    {spendLabel(
+                      init.cost.rollup?.costUsd ?? session?.costUsd ?? 0,
+                      init.cost.board?.totals.unpricedTokens ?? 0,
+                    )}
                   </dd>
                 </div>
                 <div>

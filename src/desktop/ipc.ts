@@ -3,6 +3,7 @@ import type { AgentEvent } from '../core/events.js';
 import type { Pricing } from '../core/pricing.js';
 import type {
   ContextPayload,
+  CostPayload,
   DoctorFileTargetName,
   DoctorReportPayload,
   DoctorStoreTargetName,
@@ -32,6 +33,7 @@ export interface DesktopBackend {
   setModel(model: { provider: string; modelId: string }): Promise<InitPayload>;
   setMode(mode: PermissionModeName): Promise<InitPayload>;
   setPricing(pattern: string, rates: Pricing | null): Promise<InitPayload>;
+  getCost(): Promise<CostPayload>;
   addRule(list: RuleListName, scope: RuleScopeName, rule: string): Promise<InitPayload>;
   removeRule(list: RuleListName, scope: RuleScopeName, rule: string): Promise<InitPayload>;
   moveRule(
@@ -194,6 +196,7 @@ export function createHandlers(backend: DesktopBackend): Record<string, Handler>
       const { pattern, rates } = validate(pricingSchema, payload);
       return backend.setPricing(pattern, rates);
     },
+    'cost:get': async () => backend.getCost(),
     'mcp:reload': async () => backend.reloadMcp(),
     'mcp:set': async (payload) => {
       const { scope, draft } = validate(mcpServerSchema, payload);

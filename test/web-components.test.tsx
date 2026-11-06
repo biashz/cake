@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildCostBoard, type CostRow, emptyCostBoard } from '../src/core/cost-board.js';
 import type {
   CostPayload,
   DoctorFixPayload,
@@ -9,9 +10,11 @@ import type {
   McpStatus,
   RuleScopeName,
   RulesPayload,
+  SessionInfo,
 } from '../src/desktop/api.js';
 import { ApprovalCard } from '../web/src/components/ApprovalCard';
 import { Composer } from '../web/src/components/Composer';
+import { HeatBar } from '../web/src/components/HeatBar';
 import {
   CostPanel,
   FixControl,
@@ -19,6 +22,7 @@ import {
   PlanPanel,
   RulesSection,
 } from '../web/src/components/Inspector';
+import { SessionHeader } from '../web/src/components/SessionHeader';
 import { Sidebar } from '../web/src/components/Sidebar';
 import { ToolCard } from '../web/src/components/ToolCard';
 import { Transcript } from '../web/src/components/Transcript';
@@ -237,6 +241,9 @@ describe('CostPanel', () => {
     ],
     configFile: '/repo/.cake/config.json',
     ...over,
+    board: over.board ?? emptyCostBoard(),
+    rollup: over.rollup ?? null,
+    workspace: over.workspace ?? null,
   });
 
   it('shows the rate in use, its source, and the built-in card', () => {
@@ -335,6 +342,178 @@ describe('CostPanel', () => {
 
     expect(screen.getByText('Open a workspace to store rates.')).toBeTruthy();
     expect(screen.queryByLabelText('Pattern')).toBeNull();
+  });
+
+  const boardRow = (over: Partial<CostRow> = {}): CostRow => ({
+    turn: 1,
+    seq: 0,
+    occurredAt: new Date('2026-11-06T09:20:00').getTime(),
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-5',
+    scope: 'main',
+    agentType: '',
+    inputTokens: 1000,
+    outputTokens: 200,
+    totalTokens: 1200,
+    costUsd: 0.0042,
+    priced: true,
+    ...over,
+  });
+  const nested = (over: Partial<CostRow> = {}): CostRow =>
+    boardRow({
+      seq: 1,
+      scope: 'subagent',
+      agentType: 'Explore',
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      inputTokens: 500,
+      outputTokens: 100,
+      totalTokens: 600,
+      costUsd: 0.0004,
+      ...over,
+    });
+
+  it('breaks the session down turn by turn, nested work inside its turn', () => {
+    render(
+      <CostPanel
+        cost={fixture({
+          board: buildCostBoard([
+            boardRow(),
+            boardRow({ turn: 2, costUsd: 0.0031, totalTokens: 900 }),
+            nested({ turn: 2 }),
+          ]),
+          rollup: { costUsd: 0.0077, totalTokens: 2700 },
+        })}
+        onSetPricing={vi.fn()}
+      />,
+    );
+
+    // Newest first, so the turn that just finished is the one at the top.
+    const turns = screen.getAllByTestId('cost-turn-row');
+    expect(turns).toHaveLength(2);
+    expect(turns[0]?.querySelector('.board-num')?.textContent).toBe('2');
+    expect(within(turns[0] as HTMLElement).getAllByTestId('cost-line')).toHaveLength(2);
+    expect(within(turns[1] as HTMLElement).getAllByTestId('cost-line')).toHaveLength(1);
+    expect(screen.getAllByText('Main model')).toHaveLength(2);
+    expect(screen.getAllByText('Subagent: Explore')).toHaveLength(2);
+    expect(screen.getByTestId('cost-spend').textContent).toBe('$0.0077');
+    expect(screen.queryByTestId('cost-detail-note')).toBeNull();
+  });
+
+  it('groups spend by model and by work, and offers a rate only where one is missing', () => {
+    render(
+      <CostPanel
+        cost={fixture({
+          board: buildCostBoard([
+            boardRow(),
+            boardRow({ turn: 2 }),
+            nested({ priced: false, costUsd: 0 }),
+          ]),
+        })}
+        onSetPricing={vi.fn()}
+      />,
+    );
+
+    const groups = screen.getAllByTestId('cost-group-row').map((row) => row.textContent ?? '');
+    // Model groups are named by model, work groups by who ran it.
+    expect(groups.filter((text) => text.includes('deepseek/deepseek-chat'))).toHaveLength(1);
+    expect(groups.filter((text) => text.includes('Subagent: Explore'))).toHaveLength(1);
+    expect(groups.filter((text) => text.includes('Main model ·'))).toHaveLength(1);
+
+    // Only a model group with no rate can be priced; a work group has nothing to price.
+    const setRate = screen.getAllByRole('button', { name: 'Set rate' });
+    expect(setRate).toHaveLength(1);
+    expect(setRate[0]?.getAttribute('title')).toContain('No rate for deepseek/deepseek-chat');
+
+    fireEvent.click(setRate[0] as HTMLElement);
+    expect((screen.getByLabelText('Pattern') as HTMLInputElement).value).toBe(
+      'deepseek/deepseek-chat',
+    );
+  });
+
+  it('counts tokens with no rate instead of calling them free', () => {
+    render(
+      <CostPanel
+        cost={fixture({
+          effective: null,
+          source: null,
+          board: buildCostBoard([boardRow({ priced: false, costUsd: 0 })]),
+          rollup: { costUsd: 0, totalTokens: 1200 },
+        })}
+        onSetPricing={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('cost-spend').textContent).toBe('no price set');
+    expect(screen.getByText('Without a rate').nextElementSibling?.textContent).toBe('1.2k');
+    expect(screen.getByTestId('cost-line')?.textContent).toContain('no price set');
+  });
+
+  it('says part of the session has no rate rather than hiding it', () => {
+    render(
+      <CostPanel
+        cost={fixture({
+          board: buildCostBoard([boardRow(), nested({ priced: false, costUsd: 0 })]),
+        })}
+        onSetPricing={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('cost-spend').textContent).toBe('$0.0042 + unpriced');
+  });
+
+  it('says nothing is billed rather than showing a zero', () => {
+    render(<CostPanel cost={fixture()} onSetPricing={vi.fn()} />);
+
+    expect(screen.queryByTestId('cost-spend')).toBeNull();
+    expect(screen.getByText(/Nothing billed yet/)).toBeTruthy();
+    expect(screen.queryAllByTestId('cost-turn-row')).toHaveLength(0);
+  });
+
+  it('discloses that per-turn detail covers less than the session used', () => {
+    render(
+      <CostPanel
+        cost={fixture({
+          board: buildCostBoard([boardRow()]),
+          rollup: { costUsd: 0.5, totalTokens: 5_000 },
+        })}
+        onSetPricing={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('cost-detail-note').textContent).toContain('covers 1.2k of the 5.0k');
+  });
+
+  it('totals the workspace across its sessions', () => {
+    render(
+      <CostPanel
+        cost={fixture({
+          workspace: { sessions: 4, costUsd: 1.234, totalTokens: 90_000, unpricedTokens: 1_200 },
+        })}
+        onSetPricing={vi.fn()}
+      />,
+    );
+
+    const roll = screen.getByTestId('cost-workspace');
+    expect(within(roll).getByText('Sessions').nextElementSibling?.textContent).toBe('4');
+    expect(within(roll).getByText('Total spend').nextElementSibling?.textContent).toBe(
+      '$1.234 + unpriced',
+    );
+    expect(within(roll).getByText('Total tokens').nextElementSibling?.textContent).toBe('90.0k');
+  });
+
+  it('warns that the oldest turns are grouped but not listed', () => {
+    render(
+      <CostPanel
+        cost={fixture({
+          board: buildCostBoard([boardRow(), boardRow({ turn: 2 }), boardRow({ turn: 3 })], 2),
+        })}
+        onSetPricing={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByTestId('cost-turn-row')).toHaveLength(2);
+    expect(screen.getByTestId('cost-truncated').textContent).toContain('Older than the 2 turns');
   });
 });
 
@@ -838,6 +1017,122 @@ describe('McpSection', () => {
   });
 });
 
+describe('Spend read-outs outside the board', () => {
+  const row = (over: Partial<CostRow> = {}): CostRow => ({
+    turn: 1,
+    seq: 0,
+    occurredAt: Date.now(),
+    provider: 'anthropic',
+    model: 'claude-mystery-1',
+    scope: 'main',
+    agentType: '',
+    inputTokens: 1_000,
+    outputTokens: 200,
+    totalTokens: 1_200,
+    costUsd: 0,
+    priced: false,
+    ...over,
+  });
+
+  const cost = (over: Partial<CostPayload> = {}): CostPayload => ({
+    model: { provider: 'anthropic', modelId: 'claude-mystery-1' },
+    effective: null,
+    source: null,
+    overrides: [],
+    builtin: [],
+    configFile: null,
+    board: emptyCostBoard(),
+    rollup: null,
+    workspace: null,
+    ...over,
+  });
+
+  const session: SessionInfo = {
+    id: 's1',
+    title: 'Run',
+    cwd: '/repo',
+    provider: 'anthropic',
+    model: 'claude-mystery-1',
+    totalTokens: 1_200,
+    costUsd: 0,
+    unpricedTokens: 1_200,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  const heat = (over: Partial<{ costUsd: number; tokens: number; unpriced: number }> = {}) =>
+    render(
+      <HeatBar
+        running={false}
+        providerLabel="Anthropic"
+        modelId="claude-mystery-1"
+        mode="default"
+        startedAt={null}
+        costUsd={0}
+        tokens={1_200}
+        unpriced={1_200}
+        pendingApprovals={0}
+        {...over}
+      />,
+    );
+
+  it('says the header spend is unknown instead of $0.0000, and opens the board', () => {
+    const onShowCost = vi.fn();
+    render(
+      <SessionHeader
+        session={session}
+        cost={cost({ board: buildCostBoard([row()]) })}
+        railOpen
+        inspectorOpen
+        theme="flour"
+        onShowCost={onShowCost}
+        onToggleRail={vi.fn()}
+        onToggleInspector={vi.fn()}
+        onToggleTheme={vi.fn()}
+        onOpenPalette={vi.fn()}
+      />,
+    );
+
+    const chip = screen.getByTestId('cost-chip');
+    expect(chip.textContent).toContain('no price set');
+    expect(chip.textContent).not.toContain('$0.0000');
+    fireEvent.click(chip);
+    expect(onShowCost).toHaveBeenCalled();
+  });
+
+  it('keeps the known estimate and names the unknown part beside it', () => {
+    render(
+      <SessionHeader
+        session={{ ...session, costUsd: 0.0042 }}
+        cost={cost({
+          board: buildCostBoard([row(), row({ turn: 2, priced: true, costUsd: 0.0042 })]),
+          rollup: { costUsd: 0.0042, totalTokens: 2_400 },
+        })}
+        railOpen
+        inspectorOpen
+        theme="flour"
+        onShowCost={vi.fn()}
+        onToggleRail={vi.fn()}
+        onToggleInspector={vi.fn()}
+        onToggleTheme={vi.fn()}
+        onOpenPalette={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('cost-chip').textContent).toContain('$0.0042 + unpriced');
+  });
+
+  it('reads the run-out as unknown for a model with no rate', () => {
+    heat();
+    expect(screen.getByText('1,200 tok · no price set')).toBeTruthy();
+  });
+
+  it('does not call a run free when part of it has no rate', () => {
+    heat({ costUsd: 0.0042, tokens: 1_800, unpriced: 600 });
+    expect(screen.getByText('1,800 tok · $0.0042 + unpriced')).toBeTruthy();
+  });
+});
+
 describe('Sidebar', () => {
   const rowOf = (name: string, over: Partial<McpServerRow> = {}): McpServerRow => ({
     name,
@@ -852,7 +1147,7 @@ describe('Sidebar', () => {
     ...over,
   });
 
-  const session = {
+  const session: SessionInfo = {
     id: 's1',
     title: 'Fix the loader',
     cwd: '/repo',
@@ -860,17 +1155,18 @@ describe('Sidebar', () => {
     model: 'claude-sonnet-4-5',
     totalTokens: 120,
     costUsd: 0.02,
+    unpricedTokens: 0,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
 
-  const rail = (rows: McpServerRow[]) =>
+  const rail = (rows: McpServerRow[], over: Partial<SessionInfo> = {}) =>
     render(
       <Sidebar
         version="0.1.0"
         workspace={{ cwd: '/repo', sessionId: 's1' }}
         recents={[]}
-        sessions={[session]}
+        sessions={[{ ...session, ...over }]}
         activeSessionId="s1"
         running={false}
         pendingApprovals={0}
@@ -902,6 +1198,14 @@ describe('Sidebar', () => {
   it('stays quiet when every server is live', () => {
     rail([rowOf('files')]);
     expect(screen.getByTestId('mcp-line').textContent).toBe('MCP 1 live · 2 tools');
+  });
+
+  it('never reads a session with an unpriced model as free', () => {
+    rail([rowOf('files')], { costUsd: 0, totalTokens: 600, unpricedTokens: 600 });
+
+    const meta = screen.getByTitle('spend: no price set');
+    expect(meta.textContent).toContain('no price set');
+    expect(meta.textContent).not.toContain('$0.0000');
   });
 });
 

@@ -117,7 +117,7 @@ export async function runSubAgent(
     throw err;
   }
 
-  parentCtx.onUsage?.(result.usage, result.costUsd);
+  parentCtx.onUsage?.(result.usage, result.costUsd, { model, agentType: spec.type });
   const text = result.text.trim() || '(subagent produced no text)';
   options.onEvent?.({
     type: 'subagent-end',

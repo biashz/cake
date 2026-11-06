@@ -1,5 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { formatCost } from '../../src/core/cost.js';
+import { formatCost, spendLabel } from '../../src/core/cost.js';
 import type { Pricing } from '../../src/core/pricing.js';
 import type {
   ContextPayload,
@@ -375,6 +375,23 @@ export function App() {
 
   const activeSessionId = init?.workspace?.sessionId;
 
+  /** The board reads the stored turn rows, so it follows the session that is open. */
+  const refreshCost = useCallback(async () => {
+    const api = window.cake;
+    if (!api) return;
+    try {
+      const cost = await api.getCost();
+      setInit((current) => (current ? { ...current, cost } : current));
+    } catch (err) {
+      setError(message(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    void refreshCost();
+  }, [activeSessionId, refreshCost]);
+
   useEffect(() => {
     if (!activeSessionId) {
       setContext(null);
@@ -614,14 +631,36 @@ export function App() {
 
   const showCost = useCallback(() => {
     const current = sessions.find((session) => session.id === init?.workspace?.sessionId);
-    const spent = current?.costUsd ?? 0;
+    const board = init?.cost.board;
+    const totals = board?.totals;
     // A zero from an unpriced model is unknown, not free.
-    const priced = Boolean(init?.cost.effective) || spent > 0;
-    addEntry({
-      role: 'info',
-      text: `session ${current?.totalTokens ?? 0} tokens · ${priced ? formatCost(spent) : 'no price set'}`,
-    });
-  }, [addEntry, init?.cost.effective, init?.workspace?.sessionId, sessions]);
+    const spend = spendLabel(totals?.costUsd ?? current?.costUsd ?? 0, totals?.unpricedTokens ?? 0);
+    const nested = (board?.work ?? [])
+      .filter((group) => group.key !== 'main')
+      .map(
+        (group) =>
+          `${group.key.replace('subagent:', '') || 'nested work'} ${spendLabel(
+            group.costUsd,
+            group.unpricedTokens,
+          )}`,
+      );
+    const workspace = init?.cost.workspace;
+    const text = [
+      `session ${current?.totalTokens ?? 0} tokens · ${spend}`,
+      totals && totals.turns > 0
+        ? `${totals.turns} turn${totals.turns === 1 ? '' : 's'}`
+        : 'no per-turn detail saved',
+      nested.length > 0 ? `nested: ${nested.join(', ')}` : '',
+      workspace
+        ? `workspace ${spendLabel(workspace.costUsd, workspace.unpricedTokens)} in ${
+            workspace.sessions
+          } session${workspace.sessions === 1 ? '' : 's'}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    addEntry({ role: 'info', text });
+  }, [addEntry, init?.cost.board, init?.cost.workspace, init?.workspace?.sessionId, sessions]);
 
   const setPricingRate = useCallback(async (pattern: string, rates: Pricing | null) => {
     const api = window.cake;
@@ -785,6 +824,7 @@ export function App() {
       if (leftover.trim()) addEntry({ role: 'assistant', text: leftover });
       await refreshSessions();
       await refreshContext();
+      await refreshCost();
       setFocusToken((value) => value + 1);
     }
   }, [
@@ -796,6 +836,7 @@ export function App() {
     takeStream,
     refreshSessions,
     refreshContext,
+    refreshCost,
   ]);
 
   const stop = useCallback(() => {
@@ -1107,9 +1148,14 @@ export function App() {
           <>
             <SessionHeader
               session={activeSession}
+              cost={init.cost}
               railOpen={prefs.railOpen}
               inspectorOpen={prefs.inspectorOpen}
               theme={prefs.theme}
+              onShowCost={() => {
+                openInspector('cost');
+                void refreshCost();
+              }}
               onToggleRail={toggleRail}
               onToggleInspector={toggleInspector}
               onToggleTheme={toggleTheme}
@@ -1124,6 +1170,7 @@ export function App() {
               startedAt={startedAt}
               costUsd={activeSession?.costUsd ?? 0}
               tokens={activeSession?.totalTokens ?? 0}
+              unpriced={activeSession?.unpricedTokens ?? 0}
               pendingApprovals={approvals.length}
             />
 

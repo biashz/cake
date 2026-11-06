@@ -5,7 +5,9 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { CostLine } from '../src/core/cost.js';
 import { WorkspaceController } from '../src/desktop/controller.js';
+import { defaultSessionFile, SessionStore } from '../src/session/store.js';
 
 interface Opened {
   paths: string[];
@@ -228,5 +230,80 @@ describe('WorkspaceController doctor fixes', () => {
       await ctrl.dispose();
       await mock.close();
     }
+  });
+});
+
+describe('WorkspaceController cost board', () => {
+  const line = (over: Partial<CostLine> = {}): CostLine => ({
+    model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+    scope: 'main',
+    usage: { inputTokens: 1_000, outputTokens: 200, totalTokens: 1_200 },
+    costUsd: 0.0033,
+    priced: true,
+    ...over,
+  });
+
+  const nested = (over: Partial<CostLine> = {}): CostLine =>
+    line({
+      scope: 'subagent',
+      agentType: 'Explore',
+      model: { provider: 'deepseek', modelId: 'deepseek-chat' },
+      usage: { inputTokens: 500, outputTokens: 100, totalTokens: 600 },
+      costUsd: 0,
+      priced: false,
+      ...over,
+    });
+
+  it('bills the open session by turn and totals the workspace over every session', async () => {
+    const { cwd, ctrl } = scenario('cost');
+    const before = await ctrl.openWorkspace(cwd);
+    const sessionId = before.workspace?.sessionId;
+    if (!sessionId) throw new Error('opening a workspace did not give a session');
+
+    // A session that has not run yet is empty, not free.
+    expect(before.cost.board?.totals.turns).toBe(0);
+    expect(before.cost.board?.work).toEqual([]);
+    expect(before.cost.rollup).toEqual({ costUsd: 0, totalTokens: 0 });
+
+    const store = SessionStore.open(defaultSessionFile(cwd));
+    store.addTurnUsage(sessionId, [line()]);
+    store.addTurnUsage(sessionId, [
+      line({ costUsd: 0.0011, usage: { inputTokens: 300, outputTokens: 60, totalTokens: 360 } }),
+      nested(),
+    ]);
+    const other = store.create({ cwd, provider: 'anthropic', model: 'claude-sonnet-4-5' });
+    store.addTurnUsage(other.id, [
+      line({ costUsd: 0.5, usage: { inputTokens: 40_000, outputTokens: 0, totalTokens: 40_000 } }),
+    ]);
+    store.close();
+
+    // Re-open so the controller reads its session record back from the store.
+    ctrl.openSession(sessionId);
+    const cost = await ctrl.getCost();
+
+    expect(cost.board?.turns.map((turn) => turn.turn)).toEqual([2, 1]);
+    expect(cost.board?.totals.totalTokens).toBe(2_160);
+    expect(cost.board?.totals.costUsd).toBeCloseTo(0.0044, 10);
+    expect(cost.board?.work.map((group) => group.key)).toEqual(['main', 'subagent:Explore']);
+    expect(cost.board?.work[1]?.unpricedTokens).toBe(600);
+    expect(cost.rollup?.totalTokens).toBe(2_160);
+    expect(cost.rollup?.costUsd).toBeCloseTo(0.0044, 10);
+
+    const workspace = cost.workspace;
+    expect(workspace?.sessions).toBe(2);
+    expect(workspace?.totalTokens).toBe(42_160);
+    expect(workspace?.costUsd).toBeCloseTo(0.5044, 10);
+    expect(workspace?.unpricedTokens).toBe(600);
+    await ctrl.dispose();
+  });
+
+  it('reports no board, roll-up, or workspace while nothing is open', async () => {
+    const { ctrl } = scenario('cost-idle');
+    const init = await ctrl.init();
+
+    expect(init.cost.board).toBeNull();
+    expect(init.cost.rollup).toBeNull();
+    expect(init.cost.workspace).toBeNull();
+    await ctrl.dispose();
   });
 });

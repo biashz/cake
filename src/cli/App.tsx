@@ -1,7 +1,8 @@
 import type { ModelMessage } from 'ai';
 import { Box, Text, useApp, useInput } from 'ink';
 import { useEffect, useRef, useState } from 'react';
-import { formatCost } from '../core/cost.js';
+import { formatCost, spendLabel, unpricedTokens } from '../core/cost.js';
+import { buildCostBoard } from '../core/cost-board.js';
 import type { AgentEvent } from '../core/events.js';
 import { planProgress } from '../core/plan.js';
 import type { PricingOverrides } from '../core/pricing.js';
@@ -140,9 +141,16 @@ export function App(props: AppProps) {
       }
       case 'cost': {
         const meta = store.get(session.id) ?? session;
+        const board = buildCostBoard(store.turnUsage(session.id));
+        const spend = spendLabel(board.totals.costUsd, board.totals.unpricedTokens);
+        const work = board.work
+          .map((group) => `${group.label} ${spendLabel(group.costUsd, group.unpricedTokens)}`)
+          .join(' · ');
         addEntry({
           role: 'info',
-          text: `session ${meta.id.slice(0, 8)} · ${meta.totalTokens} tokens · ${formatCost(meta.costUsd)}`,
+          text: `session ${meta.id.slice(0, 8)} · ${meta.totalTokens} tokens · ${spend}${
+            work ? ` · ${work}` : ''
+          }${board.totals.turns === 0 ? ' · no per-turn detail saved' : ''}`,
         });
         return;
       }
@@ -291,13 +299,13 @@ export function App(props: AppProps) {
       historyRef.current = result.messages;
       store.setTitleIfEmpty(session.id, typed);
       store.saveMessages(session.id, result.messages);
-      store.addUsage(session.id, {
-        totalTokens: result.usage.totalTokens,
-        costUsd: result.costUsd,
-      });
+      store.addTurnUsage(session.id, result.lines);
       const updated = store.get(session.id);
       if (updated) setSession(updated);
-      const meta = `${result.usage.totalTokens} tokens · ${formatCost(result.costUsd)}`;
+      const meta = `${result.usage.totalTokens} tokens · ${spendLabel(
+        result.costUsd,
+        unpricedTokens(result.lines),
+      )}`;
       if (acc.trim()) {
         setStreaming('');
         addEntry({ role: 'assistant', text: acc, meta });

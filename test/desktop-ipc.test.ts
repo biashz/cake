@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { buildCostBoard, type CostRow } from '../src/core/cost-board.js';
 import type {
   ContextPayload,
   CostPayload,
@@ -19,6 +20,24 @@ import {
   workspaceOpenSchema,
 } from '../src/desktop/ipc.js';
 
+function row(overrides: Partial<CostRow> = {}): CostRow {
+  return {
+    turn: 1,
+    seq: 0,
+    occurredAt: 1_700_000_000_000,
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-5',
+    scope: 'main',
+    agentType: '',
+    inputTokens: 1_000,
+    outputTokens: 200,
+    totalTokens: 1_200,
+    costUsd: 0.0123,
+    priced: true,
+    ...overrides,
+  };
+}
+
 const costPayload: CostPayload = {
   model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
   effective: { pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 },
@@ -26,6 +45,9 @@ const costPayload: CostPayload = {
   overrides: [{ pattern: 'deepseek/deepseek-chat', inputPer1M: 0.2, outputPer1M: 0.27 }],
   builtin: [{ pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 }],
   configFile: '/tmp/demo/.cake/config.json',
+  board: buildCostBoard([row(), row({ turn: 2, costUsd: 0.02, priced: false })]),
+  rollup: { costUsd: 0.0323, totalTokens: 2_400 },
+  workspace: { sessions: 3, costUsd: 0.4, totalTokens: 30_000, unpricedTokens: 1_200 },
 };
 
 const rulesPayload: RulesPayload = {
@@ -102,6 +124,7 @@ const session: SessionInfo = {
   model: 'claude-sonnet-4-5',
   totalTokens: 0,
   costUsd: 0,
+  unpricedTokens: 0,
   createdAt: 1,
   updatedAt: 1,
 };
@@ -134,6 +157,7 @@ function backend(): DesktopBackend {
     setModel: vi.fn(async () => initPayload),
     setMode: vi.fn(async () => initPayload),
     setPricing: vi.fn(async () => initPayload),
+    getCost: vi.fn(async () => costPayload),
     addRule: vi.fn(async () => initPayload),
     removeRule: vi.fn(async () => initPayload),
     moveRule: vi.fn(async () => initPayload),
@@ -301,6 +325,18 @@ describe('desktop IPC handlers', () => {
 
     await handlers['pricing:set']?.({ pattern: 'deepseek/', rates: null });
     expect(fake.setPricing).toHaveBeenLastCalledWith('deepseek/', null);
+  });
+
+  it('reads the whole cost board from one channel', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+
+    const payload = (await handlers['cost:get']?.(undefined)) as CostPayload | undefined;
+    expect(payload).toEqual(costPayload);
+    expect(fake.getCost).toHaveBeenCalledTimes(1);
+    expect(payload?.board?.turns.map((turn) => turn.turn)).toEqual([2, 1]);
+    expect(payload?.board?.totals.unpricedTokens).toBe(1_200);
+    expect(payload?.workspace?.sessions).toBe(3);
   });
 
   it('adds, removes and moves rules through the rules channels', async () => {

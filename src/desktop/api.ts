@@ -1,4 +1,5 @@
 import type { ModelMessage } from 'ai';
+import type { CostBoard, WorkspaceSpend } from '../core/cost-board.js';
 import type { Pricing, PricingSource } from '../core/pricing.js';
 import type { PermissionPreview, TaskItem } from '../tools/types.js';
 
@@ -123,6 +124,12 @@ export interface CostPayload {
   builtin: PricingRow[];
   /** Where editing this workspace's rates writes; null when no workspace is open. */
   configFile: string | null;
+  /** Turn, model and nested-work spend of the open session; null when none is open. */
+  board: CostBoard | null;
+  /** The open session's own totals, which can exceed the board for older sessions. */
+  rollup: { costUsd: number; totalTokens: number } | null;
+  /** Every session of this workspace added together; null when no workspace is open. */
+  workspace: WorkspaceSpend | null;
 }
 
 export interface SessionInfo {
@@ -133,6 +140,8 @@ export interface SessionInfo {
   model: string;
   totalTokens: number;
   costUsd: number;
+  /** Tokens of this session with no rate; their spend is unknown, not zero. */
+  unpricedTokens: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -264,6 +273,8 @@ export interface CakeApi {
   setMode(mode: PermissionModeName): Promise<InitPayload>;
   /** Write or remove (with null) this workspace's rate for one `provider/model` pattern. */
   setPricing(pattern: string, rates: Pricing | null): Promise<InitPayload>;
+  /** The rate card and spend board of the open session, without a full re-init. */
+  getCost(): Promise<CostPayload>;
   /** Add or drop a `tool(pattern)` rule in one scope's allow/deny list. */
   setRule(
     action: 'add' | 'remove',

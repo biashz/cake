@@ -4,9 +4,26 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ModelMessage } from 'ai';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { CostLine } from '../src/core/cost.js';
+import type { TokenUsage } from '../src/core/events.js';
 import { defaultSessionFile, SessionStore } from '../src/session/store.js';
 
 let dir: string;
+
+function usage(totalTokens: number): TokenUsage {
+  return { inputTokens: totalTokens, outputTokens: 0, totalTokens };
+}
+
+function line(overrides: Partial<CostLine> = {}): CostLine {
+  return {
+    model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+    scope: 'main',
+    usage: usage(150),
+    costUsd: 0.001,
+    priced: true,
+    ...overrides,
+  };
+}
 
 beforeEach(async () => {
   dir = await mkdtemp(path.join(tmpdir(), 'cake-session-'));
@@ -60,8 +77,8 @@ describe('SessionStore', () => {
     const store = SessionStore.inMemory();
     const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
 
-    store.addUsage(meta.id, { totalTokens: 100, costUsd: 0.5 });
-    store.addUsage(meta.id, { totalTokens: 50, costUsd: 0.25 });
+    store.addTurnUsage(meta.id, [line({ costUsd: 0.5, usage: usage(100) })]);
+    store.addTurnUsage(meta.id, [line({ costUsd: 0.25, usage: usage(50) })]);
     const used = store.get(meta.id);
     expect(used?.totalTokens).toBe(150);
     expect(used?.costUsd).toBeCloseTo(0.75);
@@ -156,6 +173,190 @@ describe('SessionStore', () => {
     const reopened = SessionStore.open(file);
     expect(reopened.plan(meta.id)).toEqual([{ id: 1, subject: 'keep', status: 'pending' }]);
     reopened.close();
+  });
+});
+
+describe('SessionStore turn detail', () => {
+  it('numbers turns per session and keeps a turn nested in one number', () => {
+    const store = SessionStore.inMemory();
+    const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+
+    store.addTurnUsage(meta.id, [line({ costUsd: 0.01, usage: usage(100) })]);
+    store.addTurnUsage(meta.id, [
+      line({ costUsd: 0.02, usage: usage(80) }),
+      line({
+        scope: 'subagent',
+        agentType: 'Explore',
+        model: { provider: 'deepseek', modelId: 'deepseek-chat' },
+        costUsd: 0.005,
+        usage: usage(30),
+      }),
+    ]);
+
+    const rows = store.turnUsage(meta.id);
+    // turn + seq is the row's identity: the view keys nested lines by it.
+    expect(rows.map((row) => [row.turn, row.seq])).toEqual([
+      [1, 0],
+      [2, 0],
+      [2, 1],
+    ]);
+    expect(rows.map((row) => row.totalTokens)).toEqual([100, 80, 30]);
+    expect(rows[2]).toMatchObject({
+      scope: 'subagent',
+      agentType: 'Explore',
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+    });
+    expect(rows[0]?.agentType).toBe('');
+    store.close();
+  });
+
+  it('writes no rows and no roll-up for a turn that spent nothing', () => {
+    const store = SessionStore.inMemory();
+    const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+
+    store.addTurnUsage(meta.id, []);
+    expect(store.turnUsage(meta.id)).toEqual([]);
+    expect(store.get(meta.id)?.totalTokens).toBe(0);
+
+    store.addTurnUsage(meta.id, [line({ usage: usage(10) })]);
+    expect(store.turnUsage(meta.id).map((row) => row.turn)).toEqual([1]);
+    store.close();
+  });
+
+  it('keeps the session roll-up equal to the sum of its rows', () => {
+    const store = SessionStore.inMemory();
+    const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+
+    store.addTurnUsage(meta.id, [line({ costUsd: 0.03, usage: usage(120) })]);
+    store.addTurnUsage(meta.id, [
+      line({ costUsd: 0.02, usage: usage(90) }),
+      line({ scope: 'subagent', agentType: 'Explore', costUsd: 0.01, usage: usage(40) }),
+    ]);
+
+    const rows = store.turnUsage(meta.id);
+    const session = store.get(meta.id);
+    expect(rows.reduce((sum, row) => sum + row.totalTokens, 0)).toBe(session?.totalTokens);
+    expect(rows.reduce((sum, row) => sum + row.costUsd, 0)).toBeCloseTo(session?.costUsd ?? 0, 10);
+    store.close();
+  });
+
+  it('separates tokens with no rate from priced ones', () => {
+    const store = SessionStore.inMemory();
+    const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+
+    store.addTurnUsage(meta.id, [
+      line({ costUsd: 0.01, usage: usage(100) }),
+      line({
+        model: { provider: 'ollama', modelId: 'llama3' },
+        priced: false,
+        costUsd: 0,
+        usage: usage(60),
+      }),
+    ]);
+
+    const rows = store.turnUsage(meta.id);
+    expect(rows.map((row) => row.priced)).toEqual([true, false]);
+    expect(store.workspaceUsage('/repo').unpricedTokens).toBe(60);
+    store.close();
+  });
+
+  it('reads turn detail back after reopen', () => {
+    const file = defaultSessionFile(dir);
+    const store = SessionStore.open(file);
+    const meta = store.create({ cwd: dir, provider: 'anthropic', model: 'm' });
+    store.addTurnUsage(meta.id, [
+      line({ costUsd: 0.02, usage: usage(120) }),
+      line({ scope: 'subagent', agentType: 'Plan', costUsd: 0.01, usage: usage(30) }),
+    ]);
+    store.close();
+
+    const reopened = SessionStore.open(file);
+    const rows = reopened.turnUsage(meta.id);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ turn: 1, scope: 'main', totalTokens: 120 });
+    expect(rows[1]).toMatchObject({ turn: 1, scope: 'subagent', agentType: 'Plan' });
+    expect(rows[0]?.occurredAt).toBeGreaterThan(0);
+    expect(reopened.turnUsage('missing')).toEqual([]);
+    reopened.close();
+  });
+
+  it('totals only the sessions of one workspace', () => {
+    const store = SessionStore.inMemory();
+    const here = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    const other = store.create({ cwd: '/elsewhere', provider: 'anthropic', model: 'm' });
+
+    store.addTurnUsage(here.id, [line({ costUsd: 0.04, usage: usage(200) })]);
+    store.addTurnUsage(here.id, [
+      line({
+        priced: false,
+        costUsd: 0,
+        usage: usage(70),
+        model: { provider: 'mystery', modelId: 'x' },
+      }),
+    ]);
+    store.addTurnUsage(other.id, [line({ costUsd: 0.5, usage: usage(1_000) })]);
+
+    const spend = store.workspaceUsage('/repo');
+    expect(spend.sessions).toBe(1);
+    expect(spend.totalTokens).toBe(270);
+    expect(spend.costUsd).toBeCloseTo(0.04, 10);
+    expect(spend.unpricedTokens).toBe(70);
+    expect(store.workspaceUsage('/elsewhere').costUsd).toBeCloseTo(0.5);
+    expect(store.workspaceUsage('/nowhere')).toEqual({
+      sessions: 0,
+      costUsd: 0,
+      totalTokens: 0,
+      unpricedTokens: 0,
+    });
+    store.close();
+  });
+
+  it('counts a legacy roll-up in the workspace total without inventing rows', () => {
+    // Not defaultSessionFile: pre-detail sessions are ones cake wrote before this table.
+    const file = path.join(dir, 'legacy.db');
+    const raw = new DatabaseSync(file);
+    raw.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        cwd TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        plan TEXT NOT NULL DEFAULT '[]'
+      );
+    `);
+    raw
+      .prepare(
+        'INSERT INTO sessions (id, cwd, provider, model, total_tokens, cost_usd, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run('old', '/repo', 'anthropic', 'm', 900, 0.2, 1, 1);
+    raw.close();
+
+    const store = SessionStore.open(file);
+    expect(store.turnUsage('old')).toEqual([]);
+    expect(store.workspaceUsage('/repo')).toEqual({
+      sessions: 1,
+      costUsd: 0.2,
+      totalTokens: 900,
+      unpricedTokens: 0,
+    });
+    store.close();
+  });
+
+  it('drops turn detail with the session', () => {
+    const store = SessionStore.inMemory();
+    const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    store.addTurnUsage(meta.id, [line({ costUsd: 0.01, usage: usage(100) })]);
+
+    store.delete(meta.id);
+    expect(store.turnUsage(meta.id)).toEqual([]);
+    expect(store.workspaceUsage('/repo').totalTokens).toBe(0);
+    store.close();
   });
 });
 

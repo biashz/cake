@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { formatCost } from '../../../src/core/cost.js';
+import { spendLabel } from '../../../src/core/cost.js';
 import type { PermissionModeName } from '../../../src/desktop/api.js';
 
 const MODE_LABEL: Record<PermissionModeName, string> = {
@@ -28,6 +28,7 @@ export function HeatBar({
   startedAt,
   costUsd,
   tokens,
+  unpriced,
   pendingApprovals,
 }: {
   running: boolean;
@@ -37,6 +38,8 @@ export function HeatBar({
   startedAt: number | null;
   costUsd: number;
   tokens: number;
+  /** Tokens with no rate; their spend is unknown, so the read-out must not say $0. */
+  unpriced: number;
   pendingApprovals: number;
 }) {
   const [, tick] = useState(0);
@@ -66,7 +69,9 @@ export function HeatBar({
       <span className={`heat-mode is-${mode}`}>{MODE_LABEL[mode]}</span>
 
       <span className="heat-usage mono">
-        {tokens > 0 ? `${tokens.toLocaleString()} tok · ${formatCost(costUsd)}` : 'no spend yet'}
+        {tokens > 0
+          ? `${tokens.toLocaleString()} tok · ${spendLabel(costUsd, unpriced)}`
+          : 'no spend yet'}
       </span>
 
       {pendingApprovals > 0 ? (

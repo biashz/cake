@@ -1,7 +1,7 @@
 import type { ModelMessage } from 'ai';
 import { runAgent } from '../core/agent.js';
 import { createHistorySummarizer, maybeCompress } from '../core/context.js';
-import { addUsage } from '../core/cost.js';
+import { addUsage, type CostLine, costLine } from '../core/cost.js';
 import type { AgentEvent, TokenUsage } from '../core/events.js';
 import { expandFileReferences } from '../core/mentions.js';
 import type { PricingOverrides } from '../core/pricing.js';
@@ -46,6 +46,8 @@ export interface TurnResult {
   /** Includes usage reported by nested work (subagents). */
   usage: TokenUsage;
   costUsd: number;
+  /** The same spend, split by model and by the child agent that caused it. */
+  lines: CostLine[];
 }
 
 /**
@@ -93,16 +95,28 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
 
   const nestedUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   let nestedCostUsd = 0;
+  /**
+   * Spend per model, main call first. Folding it into one number loses which
+   * model and which child agent a turn paid for, so it is kept per line.
+   */
+  const lines: CostLine[] = [];
   const ctx: ToolContext = {
     ...options.ctx,
     onPlan: (tasks) => options.onEvent({ type: 'plan', tasks }),
-    onUsage: (usage, costUsd) => {
+    onUsage: (usage, costUsd, source) => {
       const total = addUsage(nestedUsage, usage);
       nestedUsage.inputTokens = total.inputTokens;
       nestedUsage.outputTokens = total.outputTokens;
       nestedUsage.totalTokens = total.totalTokens;
       nestedCostUsd += costUsd;
-      options.ctx.onUsage?.(usage, costUsd);
+      lines.push(
+        costLine(source?.model ?? model, usage, costUsd, {
+          scope: 'subagent',
+          agentType: source?.agentType,
+          pricing: options.pricing,
+        }),
+      );
+      options.ctx.onUsage?.(usage, costUsd, source);
     },
   };
 
@@ -119,10 +133,15 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
     registry,
   );
 
+  lines.unshift(
+    costLine(model, result.usage, result.costUsd, { scope: 'main', pricing: options.pricing }),
+  );
+
   return {
     text: result.text,
     messages: result.messages,
     usage: addUsage(result.usage, nestedUsage),
     costUsd: result.costUsd + nestedCostUsd,
+    lines,
   };
 }

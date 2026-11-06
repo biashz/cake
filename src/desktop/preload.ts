@@ -31,6 +31,7 @@ const api: CakeApi = {
   setModel: (model) => ipcRenderer.invoke('model:set', model),
   setMode: (mode) => ipcRenderer.invoke('mode:set', { mode }),
   setPricing: (pattern, rates) => ipcRenderer.invoke('pricing:set', { pattern, rates }),
+  getCost: () => ipcRenderer.invoke('cost:get'),
   setRule: (action, list, scope, rule) =>
     ipcRenderer.invoke('rules:set', { action, list, scope, rule }),
   moveRule: (list, scope, rule, delta) =>
