@@ -267,6 +267,27 @@ export interface AgentNotePayload {
   hits?: CodebaseHit[];
 }
 
+/**
+ * Main → renderer traffic about one conversation. A turn can now run behind
+ * another, so every agent channel says which session it belongs to; a payload
+ * without one describes the workspace as a whole.
+ */
+export interface AgentEventEnvelope {
+  sessionId: string;
+  /** An agent event after IPC serialization. */
+  event: unknown;
+}
+
+export interface AgentNoteEnvelope {
+  sessionId?: string;
+  note: AgentNotePayload;
+}
+
+export interface PermissionRequestEnvelope {
+  sessionId: string;
+  request: PermissionRequestPayload;
+}
+
 /** The complete surface exposed on `window.cake` by the preload script. */
 export interface CakeApi {
   init(): Promise<InitPayload>;
@@ -328,8 +349,8 @@ export interface CakeApi {
   /** Composition of the context window, layer by layer, for the Slice. */
   contextLayers(): Promise<ContextPayload>;
 
-  onAgentEvent(handler: (event: unknown) => void): () => void;
-  onAgentNote(handler: (note: AgentNotePayload) => void): () => void;
-  onPermissionRequest(handler: (request: PermissionRequestPayload) => void): () => void;
+  onAgentEvent(handler: (wire: AgentEventEnvelope) => void): () => void;
+  onAgentNote(handler: (wire: AgentNoteEnvelope) => void): () => void;
+  onPermissionRequest(handler: (wire: PermissionRequestEnvelope) => void): () => void;
   onMcpStatus(handler: (status: McpStatus) => void): () => void;
 }

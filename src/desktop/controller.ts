@@ -127,6 +127,8 @@ interface ActiveWorkspace {
  * lets a second session start while the first is still waiting on the provider.
  */
 interface ActiveRun {
+  /** The conversation this turn belongs to, so its traffic can be routed back. */
+  sessionId: string;
   abort: AbortController;
   /** Work attributed to the Slice's "This turn" layer, for this run only. */
   entries: ContextEntryPayload[];
@@ -368,6 +370,7 @@ export class WorkspaceController implements DesktopBackend {
     if (this.runs.has(sessionId)) throw new Error('A turn is already running in this session');
 
     const run: ActiveRun = {
+      sessionId,
       abort: new AbortController(),
       entries: [],
       approvals: new Map(),
@@ -382,7 +385,7 @@ export class WorkspaceController implements DesktopBackend {
       // Persist as it happens: a turn that is stopped mid-way keeps its plan.
       if (event.type === 'plan') active.store.savePlan(sessionId, event.tasks);
       this.trackTurnEvent(run, event);
-      this.send('agent:event', toWireEvent(event));
+      this.send('agent:event', { sessionId, event: toWireEvent(event) });
     };
 
     try {
@@ -414,7 +417,7 @@ export class WorkspaceController implements DesktopBackend {
         ctx: this.toolContext(active, sessionId, run),
         abortSignal: run.abort.signal,
         onEvent: emit,
-        onNote: (note) => this.send('agent:note', note),
+        onNote: (note) => this.send('agent:note', { sessionId, note }),
       });
 
       active.store.setTitleIfEmpty(sessionId, prompt);
@@ -584,7 +587,9 @@ export class WorkspaceController implements DesktopBackend {
         cwd: active.cwd,
         store,
         embedder: active.embedder,
-        onProgress: (message) => this.send('agent:note', { kind: 'index', text: message }),
+        // A rebuild belongs to the workspace, not to one session's turn.
+        onProgress: (message) =>
+          this.send('agent:note', { note: { kind: 'index', text: message } }),
       });
       const truncated = summary.truncated ? ' (chunk cap reached; some files skipped)' : '';
       return `Indexed ${summary.chunks} chunks from ${summary.indexedFiles} files${truncated}.`;
@@ -780,7 +785,7 @@ export class WorkspaceController implements DesktopBackend {
     const id = `p${++this.approvalSeq}`;
     return new Promise<PermissionDecision>((resolve) => {
       run.approvals.set(id, resolve);
-      this.send('permission:request', { id, ...request });
+      this.send('permission:request', { sessionId: run.sessionId, request: { id, ...request } });
     });
   }
 

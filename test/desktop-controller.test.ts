@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CostLine } from '../src/core/cost.js';
 import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_TURN } from '../src/core/images.js';
+import type { AgentEventEnvelope } from '../src/desktop/api.js';
 import { WorkspaceController } from '../src/desktop/controller.js';
 import { defaultSessionFile, SessionStore } from '../src/session/store.js';
 import { startChatMock } from './support/chat-mock.js';
@@ -208,8 +209,8 @@ describe('WorkspaceController doctor fixes', () => {
       stateFile: join(home, 'state.json'),
       send: (channel, payload) => {
         if (channel === 'agent:note') {
-          const note = payload as { text?: string };
-          if (typeof note.text === 'string') notes.push(note.text);
+          const wire = payload as { note?: { text?: string } };
+          if (typeof wire.note?.text === 'string') notes.push(wire.note.text);
         }
       },
       env: { OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: mock.url },
@@ -345,7 +346,7 @@ describe('WorkspaceController turns', () => {
   });
 
   it('runs two sessions at the same time', async () => {
-    const { ctrl, cwd, mock, sessionId } = await turnScenario('parallel');
+    const { ctrl, cwd, mock, sent, sessionId } = await turnScenario('parallel');
     const other = ctrl.newSession().session.id;
     try {
       const first = ctrl.run(sessionId, 'first session asks');
@@ -368,6 +369,19 @@ describe('WorkspaceController turns', () => {
       expect(transcript(other)).toContain('answer to the second');
       expect(transcript(other)).not.toContain('answer to the first');
       store.close();
+
+      // And the wire says which conversation each event came from: an event
+      // tagged with the session behind the curtain must carry its answer, not
+      // the one on screen.
+      const finished = (id: string) =>
+        sent
+          .filter((wire) => wire.channel === 'agent:event')
+          .map((wire) => wire.payload as AgentEventEnvelope)
+          .filter((wire) => wire.sessionId === id)
+          .map((wire) => wire.event as { type?: string; text?: string })
+          .filter((event) => event.type === 'finish');
+      expect(finished(sessionId).map((event) => event.text)).toEqual(['answer to the first']);
+      expect(finished(other).map((event) => event.text)).toEqual(['answer to the second']);
     } finally {
       await ctrl.dispose();
       await mock.close();

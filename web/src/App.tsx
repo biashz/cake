@@ -365,11 +365,16 @@ export function App() {
     const api = window.cake;
     if (!api) return;
     const offs = [
-      api.onAgentEvent(handleEvent),
-      api.onAgentNote((note) =>
-        addEntry({ role: 'note', kind: note.kind, text: note.text, hits: note.hits }),
+      api.onAgentEvent((wire) => handleEvent(wire.event)),
+      api.onAgentNote((wire) =>
+        addEntry({
+          role: 'note',
+          kind: wire.note.kind,
+          text: wire.note.text,
+          hits: wire.note.hits,
+        }),
       ),
-      api.onPermissionRequest((request) => setApprovals((list) => [...list, request])),
+      api.onPermissionRequest((wire) => setApprovals((list) => [...list, wire.request])),
       api.onMcpStatus((status) =>
         setInit((current) => (current ? { ...current, mcpStatus: status } : current)),
       ),
