@@ -39,7 +39,7 @@ export function Sidebar({
   recents,
   sessions,
   activeSessionId,
-  running,
+  runningIds,
   pendingApprovals,
   mcpStatus,
   onNewSession,
@@ -58,7 +58,8 @@ export function Sidebar({
   recents: string[];
   sessions: SessionInfo[];
   activeSessionId: string | null;
-  running: boolean;
+  /** Sessions with a turn in flight. Another session running does not freeze this one. */
+  runningIds: string[];
   pendingApprovals: number;
   mcpStatus: McpStatus;
   onNewSession: () => void;
@@ -234,7 +235,7 @@ export function Sidebar({
         type="button"
         className="new-session primary"
         onClick={onNewSession}
-        disabled={!workspace || running}
+        disabled={!workspace}
       >
         <Icon name="plus" size={15} />
         New session
@@ -266,6 +267,7 @@ export function Sidebar({
               {items.map((session) => {
                 const active = session.id === activeSessionId;
                 const editing = session.id === editingId;
+                const busy = runningIds.includes(session.id);
                 return (
                   <div key={session.id} className={`session-row${active ? ' is-active' : ''}`}>
                     {editing ? (
@@ -296,12 +298,11 @@ export function Sidebar({
                         type="button"
                         className="session-main"
                         onClick={() => onOpenSession(session.id)}
-                        disabled={running && !active}
                         aria-current={active ? 'true' : undefined}
                       >
                         <span
                           className={`session-dot${
-                            active && running
+                            active && busy
                               ? ' is-running'
                               : active && pendingApprovals > 0
                                 ? ' is-waiting'
@@ -332,7 +333,7 @@ export function Sidebar({
                           className="icon-button"
                           aria-label="Fork session"
                           title="Fork session — branch this conversation into a new session"
-                          disabled={running}
+                          disabled={busy}
                           onClick={() => onForkSession(session.id)}
                         >
                           <Icon name="copy" size={13} />
@@ -342,7 +343,6 @@ export function Sidebar({
                           className="icon-button"
                           aria-label="Export session as Markdown"
                           title="Export session as Markdown"
-                          disabled={running}
                           onClick={() => onExportSession(session.id)}
                         >
                           <Icon name="file" size={13} />
@@ -352,7 +352,6 @@ export function Sidebar({
                           className="icon-button"
                           aria-label="Rename session"
                           title="Rename session"
-                          disabled={running}
                           onClick={() => startRename(session)}
                         >
                           <Icon name="pencil" size={13} />
@@ -366,7 +365,7 @@ export function Sidebar({
                           title={
                             confirmId === session.id ? 'Click again to delete' : 'Delete session'
                           }
-                          disabled={running}
+                          disabled={busy}
                           onClick={() => requestDelete(session.id)}
                         >
                           {confirmId === session.id ? (

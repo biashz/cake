@@ -1437,7 +1437,8 @@ describe('Sidebar', () => {
     handlers: {
       onForkSession?: (id: string) => void;
       onExportSession?: (id: string) => void;
-      running?: boolean;
+      onOpenSession?: (id: string) => void;
+      runningIds?: string[];
     } = {},
   ) =>
     render(
@@ -1447,7 +1448,7 @@ describe('Sidebar', () => {
         recents={[]}
         sessions={[{ ...session, ...over }]}
         activeSessionId="s1"
-        running={handlers.running ?? false}
+        runningIds={handlers.runningIds ?? []}
         pendingApprovals={0}
         mcpStatus={{
           servers: rows.filter((entry) => entry.connected).map((entry) => entry.name),
@@ -1458,7 +1459,7 @@ describe('Sidebar', () => {
           changes: [],
         }}
         onNewSession={vi.fn()}
-        onOpenSession={vi.fn()}
+        onOpenSession={handlers.onOpenSession ?? vi.fn()}
         onRenameSession={vi.fn()}
         onForkSession={handlers.onForkSession ?? vi.fn()}
         onExportSession={handlers.onExportSession ?? vi.fn()}
@@ -1501,16 +1502,38 @@ describe('Sidebar', () => {
     expect(onExportSession).toHaveBeenCalledWith('s9');
   });
 
-  it('locks the row actions while a turn is running', () => {
+  it('locks the fork of the session that is running, and never its export', () => {
     const onForkSession = vi.fn();
-    rail([rowOf('files')], {}, { onForkSession, running: true });
+    const onExportSession = vi.fn();
+    rail([rowOf('files')], { id: 's9' }, { onForkSession, onExportSession, runningIds: ['s9'] });
 
-    for (const label of ['Fork session', 'Export session as Markdown']) {
-      const button = screen.getByLabelText(label) as HTMLButtonElement;
-      expect(button.disabled).toBe(true);
-      fireEvent.click(button);
-    }
+    const fork = screen.getByLabelText('Fork session') as HTMLButtonElement;
+    expect(fork.disabled).toBe(true);
+    fireEvent.click(fork);
     expect(onForkSession).not.toHaveBeenCalled();
+
+    // Writing a transcript to a file cannot disturb a turn, so it stays offered.
+    const exportButton = screen.getByLabelText('Export session as Markdown') as HTMLButtonElement;
+    expect(exportButton.disabled).toBe(false);
+    fireEvent.click(exportButton);
+    expect(onExportSession).toHaveBeenCalledWith('s9');
+  });
+
+  it('reads another session while one is running', () => {
+    const onOpenSession = vi.fn();
+    const onForkSession = vi.fn();
+    rail([rowOf('files')], { id: 's9' }, { onOpenSession, onForkSession, runningIds: ['s1'] });
+
+    const row = screen.getByRole('button', { name: /Fix the loader/ }) as HTMLButtonElement;
+    expect(row.disabled).toBe(false);
+    fireEvent.click(row);
+    expect(onOpenSession).toHaveBeenCalledWith('s9');
+
+    // This row is idle, so branching it does not have to wait for the other session.
+    const fork = screen.getByLabelText('Fork session') as HTMLButtonElement;
+    expect(fork.disabled).toBe(false);
+    fireEvent.click(fork);
+    expect(onForkSession).toHaveBeenCalledWith('s9');
   });
 });
 

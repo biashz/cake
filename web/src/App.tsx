@@ -9,15 +9,12 @@ import type {
   McpDraft,
   ModelHandle,
   PermissionModeName,
-  PermissionRequestPayload,
   RuleListName,
   RuleMove,
   RuleScopeName,
   SessionInfo,
   SessionPayload,
-  TokenTotals,
 } from '../../src/desktop/api.js';
-import type { TaskItem } from '../../src/tools/types.js';
 import { type Attachment, pickImages } from './attachments';
 import { collectChanges } from './changes';
 import { ApprovalCard } from './components/ApprovalCard';
@@ -47,6 +44,14 @@ import {
   type UiPrefs,
 } from './prefs';
 import {
+  type Buffers,
+  dropBuffer,
+  emptyBuffer,
+  type RunBuffer,
+  runningIds,
+  withBuffer,
+} from './run-buffers';
+import {
   addToolCall,
   attachToolResult,
   type Entry,
@@ -74,6 +79,22 @@ const HELP_TEXT = [
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Where an event goes when no session is open: a buffer of its own, never on screen. */
+const NO_SESSION = '';
+
+interface StreamState {
+  text: string;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+function streamState(map: Map<string, StreamState>, sessionId: string): StreamState {
+  const existing = map.get(sessionId);
+  if (existing) return existing;
+  const fresh: StreamState = { text: '', timer: null };
+  map.set(sessionId, fresh);
+  return fresh;
 }
 
 function Welcome({
@@ -137,24 +158,16 @@ function Welcome({
 export function App() {
   const [init, setInit] = useState<InitPayload | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [streaming, setStreaming] = useState('');
-  const [approvals, setApprovals] = useState<PermissionRequestPayload[]>([]);
+  const [buffers, setBuffers] = useState<Buffers>({});
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastUsage, setLastUsage] = useState<TokenTotals | null>(null);
   const [context, setContext] = useState<ContextPayload | null>(null);
-  const [startedAt, setStartedAt] = useState<number | null>(null);
-  /** The model the kernel actually started this turn on, which may differ from init. */
-  const [runModel, setRunModel] = useState<ModelHandle | null>(null);
   const [doctor, setDoctor] = useState<DoctorReportPayload | null>(null);
   const [doctorBusy, setDoctorBusy] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('changes');
-  const [plan, setPlan] = useState<TaskItem[]>([]);
   const [focusToken, setFocusToken] = useState(0);
   const [modelMenuSignal, setModelMenuSignal] = useState(0);
   const [modeMenuSignal, setModeMenuSignal] = useState(0);
@@ -166,53 +179,128 @@ export function App() {
     return loaded;
   });
 
+  /** Entry ids grow across sessions, so two transcripts can never share a key. */
   const nextId = useRef(0);
-  const streamRef = useRef('');
-  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const runningRef = useRef(false);
+  /** Text waiting to be flushed, and its 50ms timer, one pair per running session. */
+  const streams = useRef(new Map<string, StreamState>());
+  /** Which sessions have a turn in flight, readable inside a click before React flushes. */
+  const runsRef = useRef(new Set<string>());
 
-  const addEntry = useCallback((entry: Omit<Entry, 'id'>) => {
-    const id = nextId.current++;
-    setEntries((list) => [...list, { ...entry, at: Date.now(), id }]);
+  const activeSessionId = init?.workspace?.sessionId ?? NO_SESSION;
+  /** The transcript, strip and plan on screen are whichever session is open. */
+  const buffer = buffers[activeSessionId] ?? emptyBuffer;
+  const {
+    entries,
+    streaming,
+    approvals,
+    running,
+    startedAt,
+    runModel,
+    plan,
+    usage: lastUsage,
+  } = buffer;
+  const runningList = useMemo(() => runningIds(buffers), [buffers]);
+  /** Workspace-wide operations wait for every session; a session only waits for itself. */
+  const anyRunning = runningList.length > 0;
+
+  /** The open session as of the last commit, for handlers registered once. */
+  const activeRef = useRef(activeSessionId);
+  useEffect(() => {
+    activeRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  const patch = useCallback((sessionId: string, change: (current: RunBuffer) => RunBuffer) => {
+    setBuffers((all) => withBuffer(all, sessionId, change));
   }, []);
 
-  /** Streaming text lives in a ref and is flushed to React state at most every 50ms. */
-  const takeStream = useCallback((): string => {
-    if (flushTimer.current !== null) {
-      clearTimeout(flushTimer.current);
-      flushTimer.current = null;
+  const addEntry = useCallback(
+    (sessionId: string, entry: Omit<Entry, 'id'>) => {
+      const id = nextId.current++;
+      patch(sessionId, (current) => ({
+        ...current,
+        entries: [...current.entries, { ...entry, at: Date.now(), id }],
+      }));
+    },
+    [patch],
+  );
+
+  /** Streaming text lives per session and reaches React state at most every 50ms. */
+  const appendStream = useCallback(
+    (sessionId: string, delta: string) => {
+      const state = streamState(streams.current, sessionId);
+      state.text += delta;
+      if (state.timer !== null) return;
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        // A flush that outlived its own buffer must not rewrite a restored transcript.
+        if (streams.current.get(sessionId) !== state) return;
+        patch(sessionId, (current) => ({ ...current, streaming: state.text }));
+      }, 50);
+    },
+    [patch],
+  );
+
+  /** Stop showing streamed text and hand it over as one finished entry. */
+  const takeStream = useCallback(
+    (sessionId: string): string => {
+      const state = streams.current.get(sessionId);
+      if (!state) return '';
+      if (state.timer !== null) {
+        clearTimeout(state.timer);
+        state.timer = null;
+      }
+      const text = state.text;
+      state.text = '';
+      patch(sessionId, (current) => ({ ...current, streaming: '' }));
+      return text;
+    },
+    [patch],
+  );
+
+  /** Keep the click-time guard and the rendered status agreeing about who is running. */
+  const markRun = useCallback(
+    (sessionId: string, on: boolean) => {
+      if (on) runsRef.current.add(sessionId);
+      else runsRef.current.delete(sessionId);
+      patch(sessionId, (current) => ({ ...current, running: on }));
+    },
+    [patch],
+  );
+
+  /** Another workspace: nothing carried over from the last one is still true. */
+  const clearBuffers = useCallback(() => {
+    for (const state of streams.current.values()) {
+      if (state.timer !== null) clearTimeout(state.timer);
     }
-    const text = streamRef.current;
-    streamRef.current = '';
-    setStreaming('');
-    return text;
+    streams.current.clear();
+    runsRef.current.clear();
+    nextId.current = 0;
+    setBuffers({});
   }, []);
 
   const handleEvent = useCallback(
-    (raw: unknown) => {
+    (sessionId: string, raw: unknown) => {
       const event = raw as WireAgentEvent;
       switch (event.type) {
         case 'start': {
-          setStartedAt(Date.now());
-          setRunModel(event.model);
+          patch(sessionId, (current) => ({
+            ...current,
+            startedAt: Date.now(),
+            runModel: event.model,
+          }));
           break;
         }
         case 'text-delta': {
-          streamRef.current += event.delta;
-          if (flushTimer.current === null) {
-            flushTimer.current = setTimeout(() => {
-              flushTimer.current = null;
-              setStreaming(streamRef.current);
-            }, 50);
-          }
+          appendStream(sessionId, event.delta);
           break;
         }
         case 'tool-call': {
-          const text = takeStream();
-          if (text.trim()) addEntry({ role: 'assistant', text });
-          setEntries((list) =>
-            addToolCall(
-              list,
+          const text = takeStream(sessionId);
+          if (text.trim()) addEntry(sessionId, { role: 'assistant', text });
+          patch(sessionId, (current) => ({
+            ...current,
+            entries: addToolCall(
+              current.entries,
               {
                 callId: event.callId,
                 name: event.toolName,
@@ -222,58 +310,77 @@ export function App() {
               () => nextId.current++,
               event.agentCallId,
             ),
-          );
+          }));
           break;
         }
         case 'tool-result':
-          setEntries((list) =>
-            attachToolResult(list, event.callId, event.output, 'done', event.toolName),
-          );
+          patch(sessionId, (current) => ({
+            ...current,
+            entries: attachToolResult(
+              current.entries,
+              event.callId,
+              event.output,
+              'done',
+              event.toolName,
+            ),
+          }));
           break;
         case 'tool-error':
-          setEntries((list) =>
-            attachToolResult(list, event.callId, event.error.message, 'error', event.toolName),
-          );
+          patch(sessionId, (current) => ({
+            ...current,
+            entries: attachToolResult(
+              current.entries,
+              event.callId,
+              event.error.message,
+              'error',
+              event.toolName,
+            ),
+          }));
           break;
         case 'subagent-start':
-          setEntries((list) =>
-            startAgent(
-              list,
+          patch(sessionId, (current) => ({
+            ...current,
+            entries: startAgent(
+              current.entries,
               event.callId,
               { type: event.agentType, prompt: event.prompt },
               () => nextId.current++,
             ),
-          );
+          }));
           break;
         case 'subagent-end':
-          setEntries((list) =>
-            endAgent(list, event.callId, {
+          patch(sessionId, (current) => ({
+            ...current,
+            entries: endAgent(current.entries, event.callId, {
               text: event.text,
               tokens: event.usage.totalTokens,
               costUsd: event.costUsd,
             }),
-          );
+          }));
           break;
         case 'plan':
-          setPlan(event.tasks);
+          patch(sessionId, (current) => ({ ...current, plan: event.tasks }));
           break;
         case 'finish': {
-          const text = takeStream();
-          setLastUsage(event.usage);
+          const text = takeStream(sessionId);
+          patch(sessionId, (current) => ({ ...current, usage: event.usage }));
           const meta = `${event.usage.totalTokens} tokens · ${formatCost(event.costUsd)}`;
-          if (text.trim()) addEntry({ role: 'assistant', text, meta });
-          else if (event.usage.totalTokens > 0) addEntry({ role: 'info', text: meta });
+          if (text.trim()) addEntry(sessionId, { role: 'assistant', text, meta });
+          else if (event.usage.totalTokens > 0) addEntry(sessionId, { role: 'info', text: meta });
           break;
         }
         case 'error':
-          takeStream();
-          addEntry({ role: 'error', text: `${event.error.name}: ${event.error.message}` });
+          takeStream(sessionId);
+          addEntry(sessionId, {
+            role: 'error',
+            text: `${event.error.name}: ${event.error.message}`,
+          });
           break;
         default:
           break;
       }
     },
-    [addEntry, takeStream],
+    [addEntry, appendStream, patch, takeStream],
   );
 
   const refreshSessions = useCallback(async () => {
@@ -297,20 +404,21 @@ export function App() {
     }
   }, []);
 
+  /**
+   * Point the view at a session. One that is mid-turn keeps its own buffer: the
+   * stored history is behind what has already arrived, and reloading would erase
+   * the answer the session is still writing.
+   */
   const applySession = useCallback((payload: SessionPayload) => {
-    const restored = entriesFromMessages(payload.messages);
-    nextId.current = restored.length;
-    if (flushTimer.current !== null) {
-      clearTimeout(flushTimer.current);
-      flushTimer.current = null;
-    }
-    streamRef.current = '';
-    setStreaming('');
-    setEntries(restored);
-    setApprovals([]);
+    const sessionId = payload.session.id;
+    setBuffers((all) => {
+      if (all[sessionId]?.running) return all;
+      const restored = entriesFromMessages(payload.messages);
+      nextId.current = Math.max(nextId.current, restored.length);
+      streams.current.delete(sessionId);
+      return { ...all, [sessionId]: { ...emptyBuffer, entries: restored, plan: payload.plan } };
+    });
     setAttachments([]);
-    setLastUsage(null);
-    setPlan(payload.plan);
     setInit((current) =>
       current
         ? {
@@ -365,16 +473,23 @@ export function App() {
     const api = window.cake;
     if (!api) return;
     const offs = [
-      api.onAgentEvent((wire) => handleEvent(wire.event)),
+      api.onAgentEvent((wire) => handleEvent(wire.sessionId, wire.event)),
       api.onAgentNote((wire) =>
-        addEntry({
+        // A workspace-level note, like an index rebuild, has no session of its
+        // own; it belongs to whichever transcript is open when it lands.
+        addEntry(wire.sessionId ?? activeRef.current, {
           role: 'note',
           kind: wire.note.kind,
           text: wire.note.text,
           hits: wire.note.hits,
         }),
       ),
-      api.onPermissionRequest((wire) => setApprovals((list) => [...list, wire.request])),
+      api.onPermissionRequest((wire) =>
+        patch(wire.sessionId, (current) => ({
+          ...current,
+          approvals: [...current.approvals, wire.request],
+        })),
+      ),
       api.onMcpStatus((status) =>
         setInit((current) => (current ? { ...current, mcpStatus: status } : current)),
       ),
@@ -382,9 +497,7 @@ export function App() {
     return () => {
       for (const off of offs) off();
     };
-  }, [handleEvent, addEntry]);
-
-  const activeSessionId = init?.workspace?.sessionId;
+  }, [handleEvent, addEntry, patch]);
 
   /** The board reads the stored turn rows, so it follows the session that is open. */
   const refreshCost = useCallback(async () => {
@@ -420,7 +533,9 @@ export function App() {
 
   const newSession = useCallback(async () => {
     const api = window.cake;
-    if (!api || runningRef.current || !init?.workspace) return;
+    // A turn in flight keeps writing to its own session, so starting another
+    // conversation does not have to wait for it.
+    if (!api || !init?.workspace) return;
     setBusy(true);
     try {
       applySession(await api.newSession());
@@ -436,7 +551,8 @@ export function App() {
 
   const openSession = useCallback(
     async (id: string) => {
-      if (runningRef.current) return;
+      // Reading another session is never blocked by a turn: a running one shows
+      // its live buffer, an idle one shows its stored transcript.
       setBusy(true);
       try {
         await loadSession(id);
@@ -464,10 +580,11 @@ export function App() {
   const deleteSession = useCallback(
     async (id: string) => {
       const api = window.cake;
-      if (!api || runningRef.current) return;
+      if (!api || runsRef.current.has(id)) return;
       setBusy(true);
       try {
         const payload = await api.deleteSession(id);
+        setBuffers((all) => dropBuffer(all, id));
         if (payload) applySession(payload);
         await refreshSessions();
         setError(null);
@@ -487,7 +604,7 @@ export function App() {
   const forkSession = useCallback(
     async (id: string) => {
       const api = window.cake;
-      if (!api || runningRef.current) return;
+      if (!api || runsRef.current.has(id)) return;
       setBusy(true);
       try {
         applySession(await api.forkSession(id));
@@ -512,7 +629,7 @@ export function App() {
         const count = written.pictures === 1 ? '1 picture' : `${written.pictures} pictures`;
         // A folder of pictures beside the file is a surprise unless the note says it is there.
         const extras = written.assetFolder ? ` + ${count} → ${written.assetFolder}` : '';
-        addEntry({
+        addEntry(id, {
           role: 'note',
           kind: 'export',
           text: `Markdown transcript → ${written.file}${extras}`,
@@ -528,16 +645,13 @@ export function App() {
   const openFolder = useCallback(
     async (picked: string) => {
       const api = window.cake;
-      if (!api || runningRef.current) return;
+      // The kernel will not switch workspaces while any session is mid-turn.
+      if (!api || runsRef.current.size > 0) return;
       setBusy(true);
       try {
         const payload = await api.openWorkspace(picked);
         setInit(payload);
-        nextId.current = 0;
-        setEntries([]);
-        setStreaming('');
-        setApprovals([]);
-        setLastUsage(null);
+        clearBuffers();
         setDoctor(null);
         if (payload.workspace) await loadSession(payload.workspace.sessionId);
         await refreshSessions();
@@ -549,12 +663,12 @@ export function App() {
         setBusy(false);
       }
     },
-    [loadSession, refreshSessions],
+    [clearBuffers, loadSession, refreshSessions],
   );
 
   const openWorkspace = useCallback(async () => {
     const api = window.cake;
-    if (!api || runningRef.current) return;
+    if (!api || runsRef.current.size > 0) return;
     setBusy(true);
     let picked: string | null = null;
     try {
@@ -643,7 +757,11 @@ export function App() {
         } else if (fix.kind === 'reload-mcp') {
           setInit(await api.reloadMcp());
         } else if (fix.kind === 'reindex') {
-          addEntry({ role: 'note', kind: 'index', text: await api.rebuildIndex() });
+          addEntry(activeSessionId, {
+            role: 'note',
+            kind: 'index',
+            text: await api.rebuildIndex(),
+          });
           await refreshContext();
         } else if (fix.kind === 'open-file') {
           await api.openDoctorFile(fix.target);
@@ -655,7 +773,7 @@ export function App() {
         setError(message(err));
       }
     },
-    [addEntry, openWorkspace, refreshContext],
+    [activeSessionId, addEntry, openWorkspace, refreshContext],
   );
 
   const openInspector = useCallback((tab?: InspectorTab) => {
@@ -715,8 +833,15 @@ export function App() {
     ]
       .filter(Boolean)
       .join(' · ');
-    addEntry({ role: 'info', text });
-  }, [addEntry, init?.cost.board, init?.cost.workspace, init?.workspace?.sessionId, sessions]);
+    addEntry(activeSessionId, { role: 'info', text });
+  }, [
+    activeSessionId,
+    addEntry,
+    init?.cost.board,
+    init?.cost.workspace,
+    init?.workspace?.sessionId,
+    sessions,
+  ]);
 
   const setPricingRate = useCallback(async (pattern: string, rates: Pricing | null) => {
     const api = window.cake;
@@ -798,7 +923,7 @@ export function App() {
       if (!raw.startsWith('/')) return false;
       const match = /^\/([a-z]+)(?:\s+([\s\S]*))?$/i.exec(raw.trim());
       if (!match) {
-        addEntry({ role: 'error', text: `unknown command "${raw}" — type /help` });
+        addEntry(activeSessionId, { role: 'error', text: `unknown command "${raw}" — type /help` });
         return true;
       }
       const name = (match[1] ?? '').toLowerCase();
@@ -823,7 +948,7 @@ export function App() {
           if (picked) {
             void changeMode(picked);
           } else {
-            addEntry({
+            addEntry(activeSessionId, {
               role: 'error',
               text: `unknown mode "${arg}" — plan, default, acceptEdits, or yolo`,
             });
@@ -851,14 +976,18 @@ export function App() {
           void runDoctorChecks();
           return true;
         case 'help':
-          addEntry({ role: 'info', text: HELP_TEXT });
+          addEntry(activeSessionId, { role: 'info', text: HELP_TEXT });
           return true;
         default:
-          addEntry({ role: 'error', text: `unknown command /${name} — type /help` });
+          addEntry(activeSessionId, {
+            role: 'error',
+            text: `unknown command /${name} — type /help`,
+          });
           return true;
       }
     },
     [
+      activeSessionId,
       addEntry,
       changeMode,
       exportSession,
@@ -896,8 +1025,10 @@ export function App() {
 
   const submit = useCallback(async () => {
     const raw = prompt.trim();
-    const sessionId = init?.workspace?.sessionId;
-    if (!raw || !sessionId || runningRef.current || busy) return;
+    const sessionId = activeSessionId;
+    // Only this session's own turn blocks the send; another one running in the
+    // background is the reason the composer is free.
+    if (!raw || !sessionId || runsRef.current.has(sessionId) || busy) return;
     const images = attachments.map((item) => item.dataUrl);
     setPrompt('');
     setError(null);
@@ -907,36 +1038,43 @@ export function App() {
       setFocusToken((value) => value + 1);
       return;
     }
-    setApprovals([]);
+    patch(sessionId, (current) => ({ ...current, approvals: [] }));
     setAttachments([]);
-    addEntry({ role: 'user', text: raw, images: images.length > 0 ? images : undefined });
-    runningRef.current = true;
-    setRunning(true);
-    setStartedAt(Date.now());
+    addEntry(sessionId, {
+      role: 'user',
+      text: raw,
+      images: images.length > 0 ? images : undefined,
+    });
+    markRun(sessionId, true);
+    patch(sessionId, (current) => ({ ...current, startedAt: Date.now() }));
     try {
       await window.cake?.run(sessionId, raw, images);
     } catch (err) {
-      addEntry({ role: 'error', text: message(err) });
+      addEntry(sessionId, { role: 'error', text: message(err) });
     } finally {
-      runningRef.current = false;
-      setRunning(false);
-      setApprovals([]);
-      setStartedAt(null);
-      setRunModel(null);
-      const leftover = takeStream();
-      if (leftover.trim()) addEntry({ role: 'assistant', text: leftover });
+      markRun(sessionId, false);
+      patch(sessionId, (current) => ({
+        ...current,
+        approvals: [],
+        startedAt: null,
+        runModel: null,
+      }));
+      const leftover = takeStream(sessionId);
+      if (leftover.trim()) addEntry(sessionId, { role: 'assistant', text: leftover });
       await refreshSessions();
       await refreshContext();
       await refreshCost();
       setFocusToken((value) => value + 1);
     }
   }, [
+    activeSessionId,
     prompt,
     attachments,
-    init?.workspace?.sessionId,
     busy,
     runSlash,
     addEntry,
+    markRun,
+    patch,
     takeStream,
     refreshSessions,
     refreshContext,
@@ -946,18 +1084,23 @@ export function App() {
   const stop = useCallback(() => {
     // The composer only ever starts a turn for the open session, so that is the
     // one it can stop; a background session stops from its own row.
-    const sessionId = init?.workspace?.sessionId;
-    if (sessionId) void window.cake?.abort(sessionId);
-  }, [init?.workspace?.sessionId]);
+    if (activeSessionId) void window.cake?.abort(activeSessionId);
+  }, [activeSessionId]);
 
-  const respond = useCallback(async (id: string, decision: 'allow' | 'deny') => {
-    setApprovals((list) => list.filter((item) => item.id !== id));
-    try {
-      await window.cake?.respondPermission(id, decision);
-    } catch (err) {
-      setError(message(err));
-    }
-  }, []);
+  const respond = useCallback(
+    async (id: string, decision: 'allow' | 'deny') => {
+      patch(activeSessionId, (current) => ({
+        ...current,
+        approvals: current.approvals.filter((item) => item.id !== id),
+      }));
+      try {
+        await window.cake?.respondPermission(id, decision);
+      } catch (err) {
+        setError(message(err));
+      }
+    },
+    [activeSessionId, patch],
+  );
 
   const toggleRail = useCallback(() => {
     setPrefs((current) => {
@@ -1060,7 +1203,7 @@ export function App() {
         group: 'Session',
         hint: 'Ctrl N',
         keywords: 'clear reset start over',
-        disabled: !hasWorkspace || running,
+        disabled: !hasWorkspace,
         run: () => void newSession(),
       },
       {
@@ -1112,7 +1255,7 @@ export function App() {
         label: 'Open folder…',
         group: 'Workspace',
         keywords: 'project directory recent',
-        disabled: running,
+        disabled: anyRunning,
         run: () => void openWorkspace(),
       },
       {
@@ -1120,7 +1263,7 @@ export function App() {
         label: 'Reload MCP servers',
         group: 'Workspace',
         keywords: 'tools connect restart',
-        disabled: !hasWorkspace || running,
+        disabled: !hasWorkspace || anyRunning,
         run: () => void reloadMcp(),
       },
       {
@@ -1181,12 +1324,14 @@ export function App() {
         group: 'Sessions',
         hint: session.model,
         keywords: `${session.cwd} ${session.model}`,
-        disabled: running || session.id === init?.workspace?.sessionId,
+        // A running session is worth opening precisely because it is answering.
+        disabled: session.id === activeId,
         run: () => void openSession(session.id),
       });
     }
     return actions;
   }, [
+    anyRunning,
     init?.workspace,
     sessions,
     running,
@@ -1244,7 +1389,7 @@ export function App() {
           recents={init.recents}
           sessions={sessions}
           activeSessionId={workspace?.sessionId ?? null}
-          running={running}
+          runningIds={runningList}
           pendingApprovals={approvals.length}
           mcpStatus={init.mcpStatus}
           onNewSession={() => void newSession()}
