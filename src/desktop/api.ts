@@ -285,7 +285,8 @@ export interface CakeApi {
   exportSession(id: string, file?: string): Promise<ExportResult>;
 
   run(sessionId: string, prompt: string, images?: string[]): Promise<RunResult>;
-  abort(): Promise<void>;
+  /** Stop one session's turn; other sessions keep running. */
+  abort(sessionId: string): Promise<void>;
   respondPermission(id: string, decision: PermissionDecisionName): Promise<void>;
 
   setModel(model: ModelHandle): Promise<InitPayload>;

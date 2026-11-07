@@ -28,7 +28,7 @@ const api: CakeApi = {
 
   run: (sessionId, prompt, images) =>
     ipcRenderer.invoke('agent:run', { sessionId, prompt, images }),
-  abort: () => ipcRenderer.invoke('agent:abort'),
+  abort: (sessionId) => ipcRenderer.invoke('agent:abort', { id: sessionId }),
   respondPermission: (id, decision) => ipcRenderer.invoke('permission:respond', { id, decision }),
 
   setModel: (model) => ipcRenderer.invoke('model:set', model),

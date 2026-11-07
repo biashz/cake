@@ -9,6 +9,7 @@ import type { CostLine } from '../src/core/cost.js';
 import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_TURN } from '../src/core/images.js';
 import { WorkspaceController } from '../src/desktop/controller.js';
 import { defaultSessionFile, SessionStore } from '../src/session/store.js';
+import { startChatMock } from './support/chat-mock.js';
 
 interface Opened {
   paths: string[];
@@ -227,6 +228,255 @@ describe('WorkspaceController doctor fixes', () => {
       const index = doctor.checks.find((check) => check.label === 'code index');
       expect(index?.status).toBe('ok');
       expect(index?.detail).toContain('1 files');
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+});
+
+describe('WorkspaceController turns', () => {
+  /** A controller whose provider is the holding mock, plus everything it sent. */
+  async function turnScenario(label: string) {
+    const mock = await startChatMock();
+    const home = tempDir(`${label}-home`);
+    const cwd = tempDir(`${label}-cwd`);
+    homes.push(home, cwd);
+    const sent: { channel: string; payload: unknown }[] = [];
+    const ctrl = new WorkspaceController({
+      stateFile: join(home, 'state.json'),
+      send: (channel, payload) => sent.push({ channel, payload }),
+      env: { ANTHROPIC_API_KEY: 'test-key', ANTHROPIC_BASE_URL: mock.url },
+      homeDir: home,
+    });
+    const init = await ctrl.openWorkspace(cwd);
+    await ctrl.setModel({ provider: 'anthropic', modelId: 'claude-sonnet-4-5' });
+    const sessionId = init.workspace?.sessionId;
+    if (!sessionId) throw new Error('opening a workspace did not give a session');
+    return { ctrl, cwd, home, mock, sent, sessionId };
+  }
+
+  it('answers a turn, tells the renderer, and leaves the transcript in the store', async () => {
+    const { ctrl, cwd, mock, sent, sessionId } = await turnScenario('turn');
+    try {
+      const run = ctrl.run(sessionId, 'say hello');
+      await mock.arrived(1);
+      mock.reply('hello from the mock');
+
+      expect((await run).text).toBe('hello from the mock');
+      expect(mock.requests[0]?.prompt).toBe('say hello');
+      expect(sent.filter((wire) => wire.channel === 'agent:event').length).toBeGreaterThan(0);
+
+      const store = SessionStore.open(defaultSessionFile(cwd));
+      expect(JSON.stringify(store.messages(sessionId))).toContain('hello from the mock');
+      expect(store.get(sessionId)?.title).toBe('say hello');
+      expect(store.turnUsage(sessionId).length).toBeGreaterThan(0);
+      store.close();
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('will not run one session twice at once', async () => {
+    const { ctrl, mock, sessionId } = await turnScenario('same-session');
+    try {
+      const first = ctrl.run(sessionId, 'first ask');
+      await mock.arrived(1);
+
+      await expect(ctrl.run(sessionId, 'second ask')).rejects.toThrow(/already running/i);
+      expect(mock.requests).toHaveLength(1);
+
+      mock.reply('done');
+      await first;
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('lets a session run again once its turn is over', async () => {
+    const { ctrl, mock, sessionId } = await turnScenario('again');
+    try {
+      const first = ctrl.run(sessionId, 'first ask');
+      await mock.arrived(1);
+      mock.reply('one');
+      await first;
+
+      const second = ctrl.run(sessionId, 'second ask');
+      await mock.arrived(2);
+      mock.reply('two');
+      expect((await second).text).toBe('two');
+      // The second turn sees the first one's transcript.
+      expect(mock.requests[1]?.messages).toBeGreaterThan(mock.requests[0]?.messages ?? 0);
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('comes back empty rather than hanging when a turn is stopped', async () => {
+    const { ctrl, cwd, mock, sessionId } = await turnScenario('abort');
+    try {
+      const run = ctrl.run(sessionId, 'take your time');
+      await mock.arrived(1);
+      ctrl.abort(sessionId);
+
+      // Stopping is not an error: the turn settles with nothing said, and the
+      // ask itself survives so the next turn can pick the thread up.
+      const result = await run;
+      expect(result.text).toBe('');
+      expect(result.usage.totalTokens).toBe(0);
+
+      const store = SessionStore.open(defaultSessionFile(cwd));
+      expect(JSON.stringify(store.messages(sessionId))).toContain('take your time');
+      expect(store.get(sessionId)?.title).toBe('take your time');
+      store.close();
+
+      // And the session is free again, not stuck behind a run that never finished.
+      const next = ctrl.run(sessionId, 'never mind');
+      await mock.arrived(2);
+      mock.reply('ok');
+      expect((await next).text).toBe('ok');
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('runs two sessions at the same time', async () => {
+    const { ctrl, cwd, mock, sessionId } = await turnScenario('parallel');
+    const other = ctrl.newSession().session.id;
+    try {
+      const first = ctrl.run(sessionId, 'first session asks');
+      await mock.arrived(1);
+      const second = ctrl.run(other, 'second session asks');
+      await mock.arrived(2);
+      // Both requests are waiting at the same moment: neither turn queued behind the other.
+      expect(mock.pending()).toBe(2);
+
+      mock.reply('answer to the first');
+      mock.reply('answer to the second');
+      expect((await first).text).toBe('answer to the first');
+      expect((await second).text).toBe('answer to the second');
+
+      // Each session gets its own answer, and only its own.
+      const store = SessionStore.open(defaultSessionFile(cwd));
+      const transcript = (id: string) => JSON.stringify(store.messages(id));
+      expect(transcript(sessionId)).toContain('answer to the first');
+      expect(transcript(sessionId)).not.toContain('answer to the second');
+      expect(transcript(other)).toContain('answer to the second');
+      expect(transcript(other)).not.toContain('answer to the first');
+      store.close();
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('shows the open session its own turn while another one runs', async () => {
+    const { ctrl, mock, sessionId } = await turnScenario('slice');
+    const screen = ctrl.newSession().session.id;
+    try {
+      const longAsk = 'a very long prompt '.repeat(300);
+      const onScreen = ctrl.run(screen, 'short ask');
+      await mock.arrived(1);
+      const elsewhere = ctrl.run(sessionId, longAsk);
+      await mock.arrived(2);
+
+      // The turn layer counts by label, so a shared buffer would merge both
+      // prompts into one "Prompt" row and inflate the session on screen.
+      const turn = ctrl.contextLayers().layers.find((layer) => layer.id === 'turn');
+      const prompt = turn?.entries.find((entry) => entry.label === 'Prompt');
+      expect(prompt?.tokens ?? 0).toBeLessThan(100);
+
+      ctrl.abort(screen);
+      ctrl.abort(sessionId);
+      expect((await onScreen).text).toBe('');
+      expect((await elsewhere).text).toBe('');
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('stops one session without stopping the other', async () => {
+    const { ctrl, mock, sessionId } = await turnScenario('stop-one');
+    const other = ctrl.newSession().session.id;
+    try {
+      const stopped = ctrl.run(sessionId, 'a slow ask');
+      await mock.arrived(1);
+      const kept = ctrl.run(other, 'a faster ask');
+      await mock.arrived(2);
+
+      ctrl.abort(sessionId);
+      expect((await stopped).text).toBe('');
+
+      // Stopping is per session: the other turn is still in flight and still
+      // gets its own answer.
+      mock.replyTo('a faster ask', 'kept going');
+      expect((await kept).text).toBe('kept going');
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('leaves the session on screen where it was when a background turn lands', async () => {
+    const { ctrl, mock, sessionId } = await turnScenario('background');
+    const screen = ctrl.newSession().session.id;
+    try {
+      const background = ctrl.run(sessionId, 'behind the curtain');
+      await mock.arrived(1);
+      mock.reply('quietly finished');
+      await background;
+
+      expect((await ctrl.init()).workspace?.sessionId).toBe(screen);
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('asks a background session with its own history, not the one on screen', async () => {
+    const { ctrl, cwd, mock, sessionId } = await turnScenario('own-history');
+    const screen = ctrl.newSession().session.id;
+    try {
+      const first = ctrl.run(screen, 'what is on the screen');
+      await mock.arrived(1);
+      mock.reply('an answer for the screen');
+      await first;
+
+      const background = ctrl.run(sessionId, 'a different thread');
+      await mock.arrived(2);
+      // The session behind the curtain has never been asked, so its turn starts
+      // with one message — not with the finished turn the screen is showing.
+      expect(mock.requests[1]?.messages).toBe(1);
+      mock.reply('quiet answer');
+      expect((await background).text).toBe('quiet answer');
+
+      const store = SessionStore.open(defaultSessionFile(cwd));
+      expect(JSON.stringify(store.messages(sessionId))).not.toContain('an answer for the screen');
+      store.close();
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('runs a background turn on the model that session was given', async () => {
+    const { ctrl, mock, sessionId } = await turnScenario('own-model');
+    await ctrl.setModel({ provider: 'anthropic', modelId: 'claude-3-haiku-20240307' });
+    // A second session takes the screen, and the sonnet setting goes with it.
+    ctrl.newSession();
+    await ctrl.setModel({ provider: 'anthropic', modelId: 'claude-sonnet-4-5' });
+    try {
+      // The screen is on a sonnet session while a haiku one is asked.
+      const background = ctrl.run(sessionId, 'ask the cheap session');
+      await mock.arrived(1);
+      expect(mock.requests[0]?.model).toBe('claude-3-haiku-20240307');
+      mock.reply('cheap answer');
+      expect((await background).text).toBe('cheap answer');
     } finally {
       await ctrl.dispose();
       await mock.close();

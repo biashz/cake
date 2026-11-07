@@ -939,8 +939,11 @@ export function App() {
   ]);
 
   const stop = useCallback(() => {
-    void window.cake?.abort();
-  }, []);
+    // The composer only ever starts a turn for the open session, so that is the
+    // one it can stop; a background session stops from its own row.
+    const sessionId = init?.workspace?.sessionId;
+    if (sessionId) void window.cake?.abort(sessionId);
+  }, [init?.workspace?.sessionId]);
 
   const respond = useCallback(async (id: string, decision: 'allow' | 'deny') => {
     setApprovals((list) => list.filter((item) => item.id !== id));

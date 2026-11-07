@@ -123,9 +123,21 @@ interface ActiveWorkspace {
 }
 
 /**
+ * One turn in flight. Every piece of run-scoped state lives here, which is what
+ * lets a second session start while the first is still waiting on the provider.
+ */
+interface ActiveRun {
+  abort: AbortController;
+  /** Work attributed to the Slice's "This turn" layer, for this run only. */
+  entries: ContextEntryPayload[];
+  /** Approvals this run is waiting on, by id. */
+  approvals: Map<string, (decision: PermissionDecision) => void>;
+}
+
+/**
  * Owns everything scoped to one open workspace: session store, MCP connections,
- * provider registry, and the currently running turn. Electron IPC only delegates
- * here, so all agent behavior stays identical to the CLI.
+ * provider registry, and every turn in flight. Electron IPC only delegates here,
+ * so all agent behavior stays identical to the CLI.
  */
 export class WorkspaceController implements DesktopBackend {
   private registry: ProviderRegistry;
@@ -144,11 +156,8 @@ export class WorkspaceController implements DesktopBackend {
   private mcpSnapshot: McpStatus = mcpView([], [], { global: null, project: null }, []);
   private mcpRows: McpServerStatus[] = [];
   private recents: string[] = [];
-  private busy = false;
-  private currentAbort: AbortController | null = null;
-  /** Work produced by the live run, attributed to the Slice's "This turn" layer. */
-  private turnEntries: ContextEntryPayload[] = [];
-  private readonly approvals = new Map<string, (decision: PermissionDecision) => void>();
+  /** Turn in flight, keyed by session. A session appears at most once. */
+  private readonly runs = new Map<string, ActiveRun>();
   private approvalSeq = 0;
 
   constructor(deps: ControllerDeps) {
@@ -178,7 +187,7 @@ export class WorkspaceController implements DesktopBackend {
   }
 
   async openWorkspace(cwd: string): Promise<InitPayload> {
-    if (this.busy) throw new Error('Cannot switch workspaces while a turn is running');
+    if (this.runs.size > 0) throw new Error('Cannot switch workspaces while a turn is running');
     const previousMode = this.active?.mode;
     await this.closeActive();
 
@@ -230,7 +239,6 @@ export class WorkspaceController implements DesktopBackend {
 
     this.recents = [cwd, ...this.recents.filter((item) => item !== cwd)].slice(0, RECENT_LIMIT);
     await this.writeState(cwd);
-    this.turnEntries = [];
     this.setMcpBundle(mcp, false);
     return this.snapshot();
   }
@@ -243,7 +251,7 @@ export class WorkspaceController implements DesktopBackend {
       systemBase: active.systemBase,
       projectSections: active.projectSections,
       messages: active.store.messages(active.session.id),
-      turn: this.turnEntries,
+      turn: this.runs.get(active.session.id)?.entries ?? [],
       maxContext: provider.capabilities(active.model.modelId).maxContext,
     });
   }
@@ -274,7 +282,7 @@ export class WorkspaceController implements DesktopBackend {
     plan: TaskItem[];
   } {
     const active = this.requireActive();
-    if (this.busy) throw new Error('Cannot fork while a turn is running');
+    if (this.runs.has(id)) throw new Error('Cannot fork a session while its turn is running');
     if (!active.store.get(id)) throw new Error(`Unknown session "${id}"`);
     const child = active.store.fork(id);
     this.activateSession(child);
@@ -333,6 +341,9 @@ export class WorkspaceController implements DesktopBackend {
     const active = this.requireActive();
     const found = active.store.get(id);
     if (!found) throw new Error(`Unknown session "${id}"`);
+    // A running turn writes its transcript back when it lands; the rows must
+    // still be there for it to write to.
+    if (this.runs.has(id)) throw new Error('Cannot delete a session while its turn is running');
     active.store.delete(id);
     if (active.session.id !== id) return null;
 
@@ -353,40 +364,43 @@ export class WorkspaceController implements DesktopBackend {
 
   async run(sessionId: string, prompt: string, images: string[] = []) {
     const active = this.requireActive();
-    if (this.busy) throw new Error('A turn is already running');
-    if (active.session.id !== sessionId) throw new Error(`Unknown session "${sessionId}"`);
+    const model = this.sessionModel(active, sessionId);
+    if (this.runs.has(sessionId)) throw new Error('A turn is already running in this session');
 
-    this.busy = true;
-    const controller = new AbortController();
-    this.currentAbort = controller;
-    this.turnEntries = [];
+    const run: ActiveRun = {
+      abort: new AbortController(),
+      entries: [],
+      approvals: new Map(),
+    };
+    this.runs.set(sessionId, run);
     this.addTurnEntry(
+      run,
       'Prompt',
       estimateTextTokens(prompt) + images.length * ESTIMATED_IMAGE_TOKENS,
     );
     const emit = (event: AgentEvent) => {
       // Persist as it happens: a turn that is stopped mid-way keeps its plan.
       if (event.type === 'plan') active.store.savePlan(sessionId, event.tasks);
-      this.trackTurnEvent(event);
+      this.trackTurnEvent(run, event);
       this.send('agent:event', toWireEvent(event));
     };
 
     try {
       const tools = buildToolCatalog(active.embedder, active.mcp.tools, {
         registry: this.registry,
-        model: active.model,
+        model,
         systemBase: active.system,
         mode: active.mode,
         rules: mergeSettings(active.settings),
         pricing: active.pricing,
-        abortSignal: controller.signal,
+        abortSignal: run.abort.signal,
         onEvent: emit,
       });
-      const provider = this.registry.get(active.model.provider);
+      const provider = this.registry.get(model.provider);
       const result = await runTurn({
         cwd: active.cwd,
         registry: this.registry,
-        model: active.model,
+        model,
         system: active.system,
         mode: active.mode,
         rules: mergeSettings(active.settings),
@@ -394,11 +408,11 @@ export class WorkspaceController implements DesktopBackend {
         history: active.store.messages(sessionId),
         prompt,
         images,
-        maxContext: provider.capabilities(active.model.modelId).maxContext,
+        maxContext: provider.capabilities(model.modelId).maxContext,
         pricing: active.pricing,
         embedder: active.embedder,
-        ctx: this.toolContext(active),
-        abortSignal: controller.signal,
+        ctx: this.toolContext(active, sessionId, run),
+        abortSignal: run.abort.signal,
         onEvent: emit,
         onNote: (note) => this.send('agent:note', note),
       });
@@ -406,7 +420,9 @@ export class WorkspaceController implements DesktopBackend {
       active.store.setTitleIfEmpty(sessionId, prompt);
       active.store.saveMessages(sessionId, result.messages);
       active.store.addTurnUsage(sessionId, result.lines);
-      active.session = active.store.get(sessionId) ?? active.session;
+      // Only the session on screen moves the workspace's idea of "the session".
+      if (active.session.id === sessionId)
+        active.session = active.store.get(sessionId) ?? active.session;
       return {
         sessionId,
         usage: result.usage,
@@ -414,23 +430,28 @@ export class WorkspaceController implements DesktopBackend {
         text: result.text,
       };
     } finally {
-      this.busy = false;
-      this.currentAbort = null;
-      this.turnEntries = [];
-      this.denyAllApprovals();
+      this.runs.delete(sessionId);
+      this.denyApprovals(run);
     }
   }
 
-  abort(): void {
-    this.currentAbort?.abort();
-    this.denyAllApprovals();
+  /** Stop one session's turn. A session that is not running has nothing to stop. */
+  abort(sessionId: string): void {
+    const run = this.runs.get(sessionId);
+    if (!run) return;
+    run.abort.abort();
+    this.denyApprovals(run);
   }
 
   respondPermission(id: string, decision: PermissionDecision): void {
-    const resolve = this.approvals.get(id);
-    if (!resolve) throw new Error(`Unknown permission request "${id}"`);
-    this.approvals.delete(id);
-    resolve(decision);
+    for (const run of this.runs.values()) {
+      const resolve = run.approvals.get(id);
+      if (!resolve) continue;
+      run.approvals.delete(id);
+      resolve(decision);
+      return;
+    }
+    throw new Error(`Unknown permission request "${id}"`);
   }
 
   setModel(model: ModelHandle): Promise<InitPayload> {
@@ -556,7 +577,7 @@ export class WorkspaceController implements DesktopBackend {
     if (!active.embedder) {
       throw new Error('Indexing needs embeddings; set an OpenAI key first');
     }
-    if (this.busy) throw new Error('Cannot rebuild the index while a turn is running');
+    if (this.runs.size > 0) throw new Error('Cannot rebuild the index while a turn is running');
     const store = CodeIndexStore.open(defaultIndexFile(active.cwd));
     try {
       const summary = await indexCodebase({
@@ -711,14 +732,14 @@ export class WorkspaceController implements DesktopBackend {
 
   private mcpTarget(scope: RuleScopeName): McpTarget {
     const active = this.requireActive();
-    if (this.busy) throw new Error('Cannot change MCP servers while a turn is running');
+    if (this.runs.size > 0) throw new Error('Cannot change MCP servers while a turn is running');
     return { cwd: active.cwd, homeDir: this.homeDir, scope };
   }
 
   /** Reconnect, then tell the panel what the connect changed. */
   async reloadMcp(): Promise<InitPayload> {
     const active = this.requireActive();
-    if (this.busy) throw new Error('Cannot reload MCP while a turn is running');
+    if (this.runs.size > 0) throw new Error('Cannot reload MCP while a turn is running');
     await active.mcp.close();
     active.mcp = await openMcpServers({ cwd: active.cwd });
     this.setMcpBundle(active.mcp, true);
@@ -744,28 +765,44 @@ export class WorkspaceController implements DesktopBackend {
     return this.reloadMcp();
   }
 
-  private toolContext(active: ActiveWorkspace): ToolContext {
+  private toolContext(active: ActiveWorkspace, sessionId: string, run: ActiveRun): ToolContext {
     return {
       cwd: active.cwd,
       // Resume where the session left off instead of starting an empty list.
-      tasks: active.store.plan(active.session.id),
-      askPermission: (request) => this.askPermission(request),
+      tasks: active.store.plan(sessionId),
+      askPermission: (request) => this.askPermission(run, request),
       log: () => {},
     };
   }
 
-  private askPermission(request: PermissionRequest): Promise<PermissionDecision> {
-    if (this.currentAbort?.signal.aborted) return Promise.resolve('deny');
+  private askPermission(run: ActiveRun, request: PermissionRequest): Promise<PermissionDecision> {
+    if (run.abort.signal.aborted) return Promise.resolve('deny');
     const id = `p${++this.approvalSeq}`;
     return new Promise<PermissionDecision>((resolve) => {
-      this.approvals.set(id, resolve);
+      run.approvals.set(id, resolve);
       this.send('permission:request', { id, ...request });
     });
   }
 
-  private denyAllApprovals(): void {
-    for (const resolve of this.approvals.values()) resolve('deny');
-    this.approvals.clear();
+  /** A turn that ends, in success or in failure, cannot leave a card up. */
+  private denyApprovals(run: ActiveRun): void {
+    for (const resolve of run.approvals.values()) resolve('deny');
+    run.approvals.clear();
+  }
+
+  /**
+   * The session a turn will write to, and the model it runs on. Any stored
+   * session can be asked — that is what lets a second one start while the
+   * first is still waiting — so the model comes from the session's own row.
+   */
+  private sessionModel(active: ActiveWorkspace, sessionId: string): ModelSpec {
+    const found = active.store.get(sessionId);
+    if (!found) throw new Error(`Unknown session "${sessionId}"`);
+    const model = this.resolveSessionModel(found);
+    if (model.provider !== found.provider || model.modelId !== found.model) {
+      active.store.updateModel(found.id, model.provider, model.modelId);
+    }
+    return model;
   }
 
   /** Point the active workspace at a stored session and sync its provider/model. */
@@ -777,7 +814,6 @@ export class WorkspaceController implements DesktopBackend {
     }
     active.session = active.store.get(session.id) ?? session;
     active.model = model;
-    this.turnEntries = [];
   }
 
   private resolveSessionModel(session: SessionMeta): ModelSpec {
@@ -826,27 +862,29 @@ export class WorkspaceController implements DesktopBackend {
     return alive.slice(0, RECENT_LIMIT);
   }
 
-  private addTurnEntry(label: string, tokens: number): void {
+  private addTurnEntry(run: ActiveRun, label: string, tokens: number): void {
     if (tokens <= 0) return;
-    const found = this.turnEntries.find((entry) => entry.label === label);
+    const found = run.entries.find((entry) => entry.label === label);
     if (found) found.tokens += tokens;
-    else this.turnEntries.push({ label, tokens });
+    else run.entries.push({ label, tokens });
   }
 
   /** Keeps the Slice's turn layer honest while a run is in flight. */
-  private trackTurnEvent(event: AgentEvent): void {
+  private trackTurnEvent(run: ActiveRun, event: AgentEvent): void {
     switch (event.type) {
       case 'text-delta':
-        this.addTurnEntry('Reply', Math.max(1, estimateTextTokens(event.delta)));
+        this.addTurnEntry(run, 'Reply', Math.max(1, estimateTextTokens(event.delta)));
         break;
       case 'tool-call':
         this.addTurnEntry(
+          run,
           `→ ${event.toolName}`,
           estimateTextTokens(JSON.stringify(event.input ?? {})),
         );
         break;
       case 'tool-result':
         this.addTurnEntry(
+          run,
           `← ${event.toolName}`,
           estimateTextTokens(
             typeof event.output === 'string' ? event.output : JSON.stringify(event.output ?? ''),
@@ -859,9 +897,11 @@ export class WorkspaceController implements DesktopBackend {
   }
 
   private async closeActive(): Promise<void> {
-    this.currentAbort?.abort();
-    this.currentAbort = null;
-    this.denyAllApprovals();
+    for (const run of this.runs.values()) {
+      run.abort.abort();
+      this.denyApprovals(run);
+    }
+    this.runs.clear();
     const active = this.active;
     this.active = undefined;
     if (!active) return;

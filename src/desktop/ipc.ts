@@ -32,7 +32,7 @@ export interface DesktopBackend {
   forkSession(id: string): SessionPayload;
   exportSession(id: string, file?: string): ExportResult;
   run(sessionId: string, prompt: string, images: string[]): Promise<RunResult>;
-  abort(): void;
+  abort(sessionId: string): void;
   respondPermission(id: string, decision: PermissionDecisionName): void;
   setModel(model: { provider: string; modelId: string }): Promise<InitPayload>;
   setMode(mode: PermissionModeName): Promise<InitPayload>;
@@ -202,7 +202,7 @@ export function createHandlers(backend: DesktopBackend): Record<string, Handler>
       const { sessionId, prompt, images } = validate(runSchema, payload);
       return backend.run(sessionId, prompt, images);
     },
-    'agent:abort': async () => backend.abort(),
+    'agent:abort': async (payload) => backend.abort(validate(sessionSchema, payload).id),
     'permission:respond': async (payload) => {
       const { id, decision } = validate(permissionSchema, payload);
       backend.respondPermission(id, decision);
