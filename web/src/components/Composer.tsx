@@ -193,6 +193,14 @@ export function Composer({
   const controls = init && onSetModel && onSetMode;
   const caps = init?.attachments;
   const canAttach = Boolean(caps?.vision && onAttach) && !running && !disabled;
+  /**
+   * The composer is held while something else is landing — a folder switch, a
+   * fork, a reconnect, a new model. Only a workspace's composer can be held at
+   * all, so this never means "open a folder": that case has no composer to say
+   * it in. The strip that usually teaches the keys carries the sentence, since
+   * those keys are the thing that is off.
+   */
+  const hold = disabled ? 'Waiting for cake to finish a workspace change' : null;
   const percent =
     context && context.maxContext > 0
       ? Math.round(Math.min(context.used / context.maxContext, 1) * 100)
@@ -272,7 +280,7 @@ export function Composer({
             value={value}
             rows={1}
             disabled={running || disabled}
-            placeholder={disabled ? 'Open a workspace to start' : 'Ask cake to change the code…'}
+            placeholder={hold ?? 'Ask cake to change the code…'}
             onChange={(event) => {
               onChange(event.target.value);
               setCaret(event.target.selectionStart ?? event.target.value.length);
@@ -423,9 +431,11 @@ export function Composer({
                 data-testid="composer-send"
                 disabled={disabled || value.trim() === ''}
                 title={
-                  attachments.length > 0 && value.trim() === ''
-                    ? 'Say what to look for before sending an image'
-                    : undefined
+                  hold
+                    ? hold
+                    : attachments.length > 0 && value.trim() === ''
+                      ? 'Say what to look for before sending an image'
+                      : undefined
                 }
               >
                 Send
@@ -435,20 +445,26 @@ export function Composer({
         </div>
       </form>
 
-      <div className="composer-hints mono">
-        <span>
-          <kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline
-        </span>
-        <span>
-          <kbd>@</kbd> files · <kbd>/</kbd> commands
-          {caps?.vision ? (
-            <>
-              {' · '}
-              <kbd>Ctrl</kbd>+<kbd>V</kbd> image
-            </>
-          ) : null}
-        </span>
-      </div>
+      {hold ? (
+        <p className="composer-hold mono" role="status" data-testid="composer-hold">
+          {hold}
+        </p>
+      ) : (
+        <div className="composer-hints mono">
+          <span>
+            <kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline
+          </span>
+          <span>
+            <kbd>@</kbd> files · <kbd>/</kbd> commands
+            {caps?.vision ? (
+              <>
+                {' · '}
+                <kbd>Ctrl</kbd>+<kbd>V</kbd> image
+              </>
+            ) : null}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

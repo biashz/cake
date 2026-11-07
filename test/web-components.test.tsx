@@ -793,6 +793,53 @@ describe('Composer', () => {
     expect(screen.queryByRole('dialog', { name: 'Choose permission mode' })).toBeNull();
     expect(document.activeElement).toBe(mode);
   });
+
+  /** A held composer is the only state where the reason has to be said. */
+  const holding = (over: { disabled: boolean; value?: string }) => {
+    render(
+      <Composer
+        value={over.value ?? ''}
+        running={false}
+        disabled={over.disabled}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        init={composerInit()}
+      />,
+    );
+  };
+
+  it('says what it is waiting for, not that a folder is missing', () => {
+    holding({ disabled: true });
+
+    const line = screen.getByTestId('composer-hold');
+    expect(line.textContent).toBe('Waiting for cake to finish a workspace change');
+    // The old sentence sent you to open a folder you had already opened: a
+    // composer only exists once one is open.
+    expect(line.textContent).not.toContain('Open a workspace');
+    expect(screen.queryByText(/send/)).toBeNull();
+  });
+
+  it('teaches the keys again the moment nothing is holding it', () => {
+    holding({ disabled: false });
+
+    expect(screen.queryByTestId('composer-hold')).toBeNull();
+    expect(screen.getByText(/send/)).toBeTruthy();
+  });
+
+  it('puts the reason where it can be heard and read, not only in the field it cannot reach', () => {
+    holding({ disabled: true });
+
+    // A disabled textarea is not focusable, so its placeholder is unreachable;
+    // the line is a live region and the dead Send carries the same sentence.
+    expect(screen.getByTestId('composer-hold').getAttribute('role')).toBe('status');
+    expect(screen.getByTestId('composer-input').getAttribute('placeholder')).toBe(
+      'Waiting for cake to finish a workspace change',
+    );
+    expect(screen.getByTestId('composer-send').getAttribute('title')).toBe(
+      'Waiting for cake to finish a workspace change',
+    );
+  });
 });
 
 describe('Transcript', () => {
@@ -1790,59 +1837,62 @@ describe('FixControl', () => {
   });
 });
 
-describe('Inspector tabs', () => {
-  const inspectorInit = {
-    rules: { allow: [], deny: [], files: { project: null, global: null }, conflicts: [] },
-    mcpStatus: {
-      servers: [],
-      tools: 0,
-      warnings: [],
-      rows: [],
-      files: { project: null, global: null },
-      changes: [],
-    },
-    cost: {
-      model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
-      effective: { pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 },
-      source: 'builtin',
-      overrides: [],
-      builtin: [{ pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 }],
-      configFile: '/repo/.cake/config.json',
-      board: emptyCostBoard(),
-      rollup: null,
-      workspace: null,
-    },
-  } as unknown as InitPayload;
+/** The inspector reads its panels out of one payload, so a test of one tab still needs the rest. */
+const inspectorInit = {
+  rules: { allow: [], deny: [], files: { project: null, global: null }, conflicts: [] },
+  mcpStatus: {
+    servers: [],
+    tools: 0,
+    warnings: [],
+    rows: [],
+    files: { project: null, global: null },
+    changes: [],
+  },
+  cost: {
+    model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+    effective: { pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 },
+    source: 'builtin',
+    overrides: [],
+    builtin: [{ pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 }],
+    configFile: '/repo/.cake/config.json',
+    board: emptyCostBoard(),
+    rollup: null,
+    workspace: null,
+  },
+} as unknown as InitPayload;
 
-  const withTabs = (tab: InspectorTab) => {
-    const onTab = vi.fn();
-    render(
-      <Inspector
-        init={inspectorInit}
-        session={null}
-        context={null}
-        lastUsage={null}
-        changes={[]}
-        plan={[]}
-        tab={tab}
-        doctor={null}
-        doctorBusy={false}
-        onTab={onTab}
-        onClose={vi.fn()}
-        onRunDoctor={vi.fn()}
-        onApplyFix={async () => {}}
-        onReloadMcp={async () => {}}
-        onSetMcpServer={async () => {}}
-        onToggleMcpServer={async () => {}}
-        onRemoveMcpServer={async () => {}}
-        onInsertFile={vi.fn()}
-        onSetPricing={async () => {}}
-        onSetRule={async () => {}}
-        onMoveRule={async () => {}}
-      />,
-    );
-    return onTab;
-  };
+function renderInspector(tab: InspectorTab) {
+  const onTab = vi.fn();
+  render(
+    <Inspector
+      init={inspectorInit}
+      session={null}
+      context={null}
+      lastUsage={null}
+      changes={[]}
+      plan={[]}
+      tab={tab}
+      doctor={null}
+      doctorBusy={false}
+      onTab={onTab}
+      onClose={vi.fn()}
+      onRunDoctor={vi.fn()}
+      onApplyFix={async () => {}}
+      onReloadMcp={async () => {}}
+      onSetMcpServer={async () => {}}
+      onToggleMcpServer={async () => {}}
+      onRemoveMcpServer={async () => {}}
+      onInsertFile={vi.fn()}
+      onSetPricing={async () => {}}
+      onSetRule={async () => {}}
+      onMoveRule={async () => {}}
+    />,
+  );
+  return onTab;
+}
+
+describe('Inspector tabs', () => {
+  const withTabs = renderInspector;
 
   it('puts only the chosen tab in the tab order', () => {
     withTabs('plan');
@@ -1889,5 +1939,93 @@ describe('Inspector tabs', () => {
     for (const tab of screen.getAllByRole('tab')) {
       expect(tab.getAttribute('aria-controls')).toBe(panel.id);
     }
+  });
+});
+
+describe('Files panel', () => {
+  /** The panel debounces the filter by 120ms, so a settle has to outlast it. */
+  const settle = async () => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    });
+  };
+
+  afterEach(() => {
+    window.cake = undefined;
+  });
+
+  it('says when the listing failed instead of that nothing matched', async () => {
+    window.cake = {
+      listFiles: async () => {
+        throw new Error('the workspace folder moved');
+      },
+    } as unknown as typeof window.cake;
+    renderInspector('files');
+    await settle();
+
+    const line = screen.getByTestId('files-error');
+    expect(line.textContent).toContain('the workspace folder moved');
+    expect(line.getAttribute('role')).toBe('alert');
+    // A failure and an empty folder read alike here, but mean opposite things.
+    expect(screen.queryByText('No files match that filter.')).toBeNull();
+  });
+
+  it('keeps saying nothing matched when the folder really did come back empty', async () => {
+    window.cake = { listFiles: async () => [] } as unknown as typeof window.cake;
+    renderInspector('files');
+    await settle();
+
+    expect(screen.getByText('No files match that filter.')).toBeTruthy();
+    expect(screen.queryByTestId('files-error')).toBeNull();
+  });
+
+  it('drops the rows a failed refresh was about, rather than leaving them up', async () => {
+    let broken = false;
+    window.cake = {
+      listFiles: async () => {
+        if (broken) throw new Error('folder unreadable');
+        return ['src/a.ts'];
+      },
+    } as unknown as typeof window.cake;
+    renderInspector('files');
+    await settle();
+    expect(screen.getByText('src/a.ts')).toBeTruthy();
+
+    broken = true;
+    fireEvent.change(screen.getByLabelText('Filter workspace files'), { target: { value: 'b' } });
+    await settle();
+
+    // Those rows answer the filter you already changed, not this one.
+    expect(screen.queryByText('src/a.ts')).toBeNull();
+    expect(screen.getByTestId('files-error')).toBeTruthy();
+  });
+
+  it('holds off saying anything until the listing lands', async () => {
+    window.cake = {
+      listFiles: () => new Promise<string[]>(() => {}),
+    } as unknown as typeof window.cake;
+    renderInspector('files');
+
+    expect(screen.getByText('Loading files…')).toBeTruthy();
+    expect(screen.queryByText('No files match that filter.')).toBeNull();
+  });
+
+  it('teaches clicking only while there is something to click', async () => {
+    window.cake = { listFiles: async () => ['src/a.ts'] } as unknown as typeof window.cake;
+    renderInspector('files');
+    await settle();
+
+    expect(screen.getByText('Click a file to add `@path` to the prompt.')).toBeTruthy();
+    // A standing instruction is not news; only a failure gets to interrupt.
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    window.cake = { listFiles: async () => [] } as unknown as typeof window.cake;
+    fireEvent.change(screen.getByLabelText('Filter workspace files'), { target: { value: 'zz' } });
+    await settle();
+
+    // The panel cannot click its own rows into existence, so the instruction goes
+    // with them rather than hovering over an empty list.
+    expect(screen.queryByText('Click a file to add `@path` to the prompt.')).toBeNull();
+    expect(screen.getByText('No files match that filter.')).toBeTruthy();
   });
 });

@@ -498,10 +498,13 @@ export function App() {
         const payload = await api.init();
         if (cancelled) return;
         setInit(payload);
+        // A closed folder has no sessions to list, and the kernel says so with an
+        // error. Asking anyway made that error the welcome screen's first words.
+        if (!payload.workspace) return;
         const list = await api.listSessions();
         if (cancelled) return;
         setSessions(list);
-        if (payload.workspace) await loadSession(payload.workspace.sessionId);
+        await loadSession(payload.workspace.sessionId);
       } catch (err) {
         if (!cancelled) setError(message(err));
       }

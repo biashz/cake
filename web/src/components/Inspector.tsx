@@ -1322,6 +1322,7 @@ export function Inspector({
   const [fileQuery, setFileQuery] = useState('');
   const [files, setFiles] = useState<string[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState<string | null>(null);
 
   useEffect(() => {
     if (tab !== 'files') return;
@@ -1331,7 +1332,15 @@ export function Inspector({
       void (async () => {
         try {
           const list = (await window.cake?.listFiles(fileQuery)) ?? [];
-          if (!cancelled) setFiles(list);
+          if (cancelled) return;
+          setFiles(list);
+          setFilesError(null);
+        } catch (err) {
+          // A listing that failed is not a listing that came back empty, and the
+          // panel says which of the two it is rather than showing you rows that
+          // answer the filter you already changed.
+          if (cancelled) return;
+          setFilesError(err instanceof Error ? err.message : String(err));
         } finally {
           if (!cancelled) setFilesLoading(false);
         }
@@ -1563,9 +1572,17 @@ export function Inspector({
                 aria-label="Filter workspace files"
               />
             </label>
-            <p className="inspect-hint">Click a file to add `@path` to the prompt.</p>
+            {/* The instruction is about rows, so it waits for them: with nothing to
+                click it would only describe a panel that cannot do what it says. */}
+            {files.length > 0 ? (
+              <p className="inspect-hint">Click a file to add `@path` to the prompt.</p>
+            ) : null}
             <div className="file-list">
-              {filesLoading && files.length === 0 ? (
+              {filesError ? (
+                <p className="inspect-warning" role="alert" data-testid="files-error">
+                  Cake could not read this folder: {filesError}
+                </p>
+              ) : filesLoading && files.length === 0 ? (
                 <p className="inspect-hint">Loading files…</p>
               ) : files.length === 0 ? (
                 <p className="inspect-hint">No files match that filter.</p>

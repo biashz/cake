@@ -214,6 +214,8 @@ Electron 窗口是三栏布局：左侧会话栏（搜索 / 重命名 / 删除�
 - `Ctrl K` 命令面板，`Ctrl N` 新会话，`Ctrl B` 折叠会话栏，`Ctrl J` 折叠 inspector
 - 输入框支持 `/` 命令（`/help`、`/new`、`/clear`、`/fork`、`/export [file]`、`/model`、`/mode`、`/files`、`/mcp`、`/doctor`、`/cost`）和 `@` 文件补全
 - 输入框工具条上的 Attach 只管图片：粘贴 / 拖入 / 选文件都进同一暂存列表，每条一个缩略图和"类型 · 大小"标签，可以单独移除；被拒的部分走同一条错误行，说清原因（格式、超出单张大小、一轮名额已满、这张已经附过了）。回合卡片把自己那轮发的图排在文字下面，alt 留空、由列表名说明这是什么
+- 空面板和失败面板不共用一句话：Files 读不到目录时写 `Cake could not read this folder: …`（`role="alert"`），而不是让你以为筛选没命中，失败那次刷新也不把上一个筛选条件的行留在屏上；真的空了才说 `No files match that filter.`，而"点文件插入 `@path`"这句只在真有行可点时出现。Cost 的三格统计不再在第二列留一个边框色的洞。第一次打开窗口（还没选文件夹）不再以 `Error invoking remote method 'session:list'` 开场——没有工作区时内核本来就没有会话可列，渲染进程不再问
+- 输入框被按住时会说原因：切工作区、分叉、重连、换模型这些动作进行中的那段，placeholder、Send 的 title 和输入框下面那条提示写的是同一句 `Waiting for cake to finish a workspace change`；提示是 `role="status"`，由它替被禁用的输入框说话（disabled 的字段自己不能被聚焦，读屏拿不到它的 title）。这句顶掉的正是平时教快捷键的那一条，因为这时那些键确实是关着的
 - inspector 的 Diagnostics 不只报告问题：每条警告 / 失败都带一个可执行动作——粘贴 provider 密钥（写入 `~/.cake/config.json` 并立刻重建 provider 注册表与 embedding）、重建代码索引、重连 MCP、打开对应配置文件（文件缺失时先写入合法空模板）、在文件管理器中定位会话库或索引库；动作完成后自动重跑检查。CLI 的 `--doctor` 仍只读，不改动任何东西
 - inspector 的 Cost 把一次会话的开销拆开列：按轮次（可展开到每个模型一行，子 agent 的开销挂在引起它的那一轮里）、按模型、按工作（主流程 / 某个子 agent），最后给出整个工作区跨会话的合计。没有费率的模型显示"no price set"或"$X + unpriced"，同一规则也用在顶栏成本标签、会话栏和运行读数上；费率卡片里点"Set rate"会把该模型的 pattern 填进编辑表单
 - 窄窗口下会话栏与 inspector 变为浮层，一次只显示一个

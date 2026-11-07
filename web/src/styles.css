@@ -2675,6 +2675,14 @@ body.is-resizing {
   padding: 0 3px;
 }
 
+/* The keys are off, so the strip says why instead of teaching them. */
+.composer-hold {
+  margin: 0;
+  padding: 6px 4px 0;
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
 button.primary {
   background: var(--accent);
   border: 1px solid var(--accent);
@@ -2948,6 +2956,12 @@ button.stop:hover:not(:disabled) {
 .stat-grid > div {
   padding: 9px 10px;
   background: var(--panel-2);
+}
+
+/* Three stats in a two-column grid leave the fourth cell as a hole the container's
+   own border colour shows through. The odd one out takes the row instead. */
+.stat-grid > div:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 
 .stat-grid dt {
