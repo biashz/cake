@@ -14,7 +14,13 @@ export function ApprovalCard({
   onRespond: (id: string, decision: 'allow' | 'deny') => void;
 }) {
   return (
-    <div className={`approval-card${request.danger ? ' danger' : ''}`} data-testid="approval-card">
+    <div
+      className={`approval-card${request.danger ? ' danger' : ''}`}
+      data-testid="approval-card"
+      // The turn cannot move until this is answered, so it interrupts rather
+      // than waits behind whatever the screen reader is reading.
+      role="alert"
+    >
       <div className="approval-rail" aria-hidden="true" />
       <div className="approval-content">
         <div className="approval-head">

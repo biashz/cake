@@ -74,6 +74,12 @@ test('two sessions answer at once, each into its own transcript', async () => {
     await expect(window.getByTestId('rail-live')).toHaveCount(0);
     await expect(window.getByTestId('rail-badge-running')).toHaveCount(0);
 
+    // The first answer landed while you were reading another conversation, and
+    // the app said so where a screen reader would hear it.
+    await expect(window.getByTestId('rail-announce')).toContainText(
+      /first thread question.*has an answer/,
+    );
+
     await row('first thread question').click();
     await expect(window.getByTestId('bubble-assistant').last()).toContainText(
       'answer to the first thread',

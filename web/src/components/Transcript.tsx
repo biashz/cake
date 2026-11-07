@@ -22,6 +22,8 @@ function Bubble({
     <div
       className={`bubble bubble-assistant${live ? ' bubble-live' : ''}`}
       data-testid="bubble-assistant"
+      // A stream would announce every token; the finished entry is what the log says.
+      {...(live ? { 'aria-live': 'off' as const } : {})}
     >
       <span className="bubble-mark">cake</span>
       <div className="bubble-body">
@@ -207,7 +209,7 @@ function bodyNodes(
       );
     } else if (entry.role === 'error') {
       nodes.push(
-        <div key={entry.id} className="entry-error" data-testid="entry-error">
+        <div key={entry.id} className="entry-error" data-testid="entry-error" role="alert">
           {entry.text}
         </div>,
       );
@@ -365,7 +367,15 @@ export function Transcript({
 
   return (
     <div className="transcript-shell">
-      <div className="transcript" data-testid="transcript" ref={scrollRef} onScroll={onScroll}>
+      <div
+        className="transcript"
+        data-testid="transcript"
+        ref={scrollRef}
+        onScroll={onScroll}
+        role="log"
+        aria-label="Conversation"
+        aria-live="polite"
+      >
         {entries.length === 0 && streaming === '' ? (
           <div className="transcript-empty">
             <span className="transcript-empty-mark" aria-hidden="true">

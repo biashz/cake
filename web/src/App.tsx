@@ -203,6 +203,45 @@ export function App() {
   const runningList = useMemo(() => runningIds(buffers), [buffers]);
   /** Sessions whose approval card is unanswered, including the ones off screen. */
   const waitingList = useMemo(() => waitingIds(buffers), [buffers]);
+
+  /**
+   * A screen reader hears the transcript on screen, because that region is a
+   * log. A turn in another session makes no sound at all, so the transitions
+   * worth knowing about — it is stuck, it finished, it failed — are said here.
+   */
+  const [announcement, setAnnouncement] = useState('');
+  const noticed = useRef(new Map<string, { approvals: number; running: boolean }>());
+  useEffect(() => {
+    const nameOf = (id: string) => {
+      const row = sessions.find((session) => session.id === id);
+      return row?.title ? `“${row.title}”` : 'A session';
+    };
+    const news: string[] = [];
+    const seen = new Set<string>();
+    for (const [id, current] of Object.entries(buffers)) {
+      const was = noticed.current.get(id);
+      seen.add(id);
+      // The session on screen announces itself; saying it twice would interrupt
+      // the person reading the very thing being described.
+      if (was && id !== activeSessionId) {
+        if (current.approvals.length > was.approvals) {
+          news.push(`${nameOf(id)} is waiting for your approval`);
+        } else if (was.running && !current.running) {
+          news.push(
+            current.entries[current.entries.length - 1]?.role === 'error'
+              ? `${nameOf(id)} stopped with an error`
+              : `${nameOf(id)} has an answer`,
+          );
+        }
+      }
+      noticed.current.set(id, { approvals: current.approvals.length, running: current.running });
+    }
+    for (const id of [...noticed.current.keys()]) {
+      if (!seen.has(id)) noticed.current.delete(id);
+    }
+    if (news.length > 0) setAnnouncement(`${news.join('. ')}.`);
+  }, [buffers, activeSessionId, sessions]);
+
   /** Workspace-wide operations wait for every session; a session only waits for itself. */
   const anyRunning = runningList.length > 0;
 
@@ -1391,6 +1430,11 @@ export function App() {
       className={`app${showRail ? '' : ' rail-closed'}${showInspector ? '' : ' inspector-closed'}`}
       style={frameStyle}
     >
+      {/* Nothing to look at, everything to hear: the one place that speaks for
+          the sessions off screen. */}
+      <div className="sr-only" role="status" aria-live="polite" data-testid="rail-announce">
+        {announcement}
+      </div>
       {showRail ? (
         <Sidebar
           version={init.version}

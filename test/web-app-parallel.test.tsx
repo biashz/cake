@@ -29,6 +29,8 @@ interface FakeKernel {
   turns: { sessionId: string; prompt: string }[];
   /** Answer a pending turn: write its exchange to the store, then close the run. */
   settle(sessionId: string, answer: string): Promise<void>;
+  /** Close a pending turn with an error, leaving nothing in the store. */
+  fail(sessionId: string, message: string): Promise<void>;
   emit(sessionId: string, event: unknown): Promise<void>;
   note(sessionId: string | undefined, text: string): Promise<void>;
   ask(sessionId: string, id: string): Promise<void>;
@@ -46,6 +48,7 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
   const turns: { sessionId: string; prompt: string }[] = [];
   const answered: { id: string; decision: string }[] = [];
   const waiters = new Map<string, (result: RunResult) => void>();
+  const failers = new Map<string, (err: Error) => void>();
 
   const session = (id: string): SessionInfo => ({
     id,
@@ -126,9 +129,10 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
     forkSession: async (id) => payload(id),
     exportSession: async () => ({ file: 'out.md', pictures: 0 }),
     run: async (sessionId, prompt) =>
-      new Promise<RunResult>((resolve) => {
+      new Promise<RunResult>((resolve, reject) => {
         turns.push({ sessionId, prompt });
         waiters.set(sessionId, resolve);
+        failers.set(sessionId, reject);
       }),
     abort: async () => {},
     respondPermission: async (id, decision) => {
@@ -182,6 +186,7 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
       const waiter = waiters.get(sessionId);
       if (!waiter) throw new Error(`no turn running in ${sessionId}`);
       waiters.delete(sessionId);
+      failers.delete(sessionId);
       // The kernel writes the exchange when the turn ends, never while it runs.
       const prompt = turns.find((turn) => turn.sessionId === sessionId)?.prompt ?? '';
       stored[sessionId] = [
@@ -208,6 +213,14 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
           text: answer,
         });
       });
+    },
+    /** End a turn the way the kernel does when the provider cannot be reached. */
+    fail: async (sessionId, message) => {
+      const reject = failers.get(sessionId);
+      if (!reject) throw new Error(`no turn running in ${sessionId}`);
+      failers.delete(sessionId);
+      waiters.delete(sessionId);
+      await send(() => reject(new Error(message)));
     },
     emit: (sessionId, event) =>
       send(() => {
@@ -412,5 +425,93 @@ describe('App with two sessions', () => {
 
     fireEvent.click(screen.getByTestId('approval-allow'));
     await waitFor(() => expect(kernel.answered).toEqual([{ id: 'p9', decision: 'allow' }]));
+  });
+
+  it('reads the transcript as a log, and keeps the streaming text out of it', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    const log = screen.getByTestId('transcript');
+    expect(log.getAttribute('role')).toBe('log');
+    expect(log.getAttribute('aria-live')).toBe('polite');
+
+    await ui.type('a question being answered');
+    await kernel.emit('s1', { type: 'text-delta', delta: 'part of an answer' });
+
+    // Every token of a stream would be a new sentence to a screen reader, so
+    // the text being written stays silent until the finished entry lands.
+    await waitFor(() =>
+      expect(screen.getByTestId('bubble-assistant').getAttribute('aria-live')).toBe('off'),
+    );
+  });
+
+  it('names the approval and the failure in front of you as alerts', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('a question that will fail');
+    await kernel.ask('s1', 'p4');
+    expect(screen.getByTestId('approval-card').getAttribute('role')).toBe('alert');
+
+    await kernel.fail('s1', 'provider is unreachable');
+    expect(screen.getByTestId('entry-error').getAttribute('role')).toBe('alert');
+  });
+
+  it('says out loud what a session you are not looking at just did', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('question in the first');
+    await ui.open('s2');
+    const spoken = screen.getByTestId('rail-announce');
+    expect(spoken.getAttribute('aria-live')).toBe('polite');
+    expect(spoken.textContent).toBe('');
+
+    await kernel.ask('s1', 'p1');
+    expect(spoken.textContent).toBe('“Ticket s1” is waiting for your approval.');
+
+    await kernel.settle('s1', 'an answer you were not watching for');
+    expect(spoken.textContent).toBe('“Ticket s1” has an answer.');
+  });
+
+  it('says when a background turn stops with an error instead of an answer', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('question in the first');
+    await ui.open('s2');
+    await kernel.fail('s1', 'provider is unreachable');
+
+    expect(screen.getByTestId('rail-announce').textContent).toBe(
+      '“Ticket s1” stopped with an error.',
+    );
+  });
+
+  it('stays quiet about the session you are already reading', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('question in the first');
+    await kernel.ask('s1', 'p1');
+    await kernel.settle('s1', 'an answer on the screen in front of you');
+
+    // The card and the finished entry speak for themselves; a second voice
+    // describing the same session would talk over them.
+    expect(screen.getByTestId('rail-announce').textContent).toBe('');
+  });
+
+  it('does not repeat, after you switch away, news you watched happen on screen', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('question in the first');
+    await ui.open('s2');
+    // The record has to stay current while the session is the one on screen,
+    // or leaving it later would report an answer you had already read.
+    await ui.open('s1');
+    await kernel.settle('s1', 'an answer you watched arrive');
+    await ui.open('s2');
+
+    expect(screen.getByTestId('rail-announce').textContent).toBe('');
   });
 });
