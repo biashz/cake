@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useState } from 'react';
+import { type RefObject, useEffect, useRef, useState } from 'react';
 import type {
   InitPayload,
   ModelHandle,
@@ -25,26 +25,75 @@ function keyEnv(providerId: string): string {
   return `${providerId.toUpperCase()}_API_KEY`;
 }
 
+const FOCUSABLE = 'button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+/**
+ * The caller's ref is the anchor, which holds the trigger as well as the open
+ * sheet. Clicking outside is about the anchor, but the keyboard belongs to the
+ * sheet alone — otherwise the first control in it is the chip that opened it.
+ */
+function sheetOf(anchor: HTMLDivElement): HTMLElement {
+  return anchor.querySelector<HTMLElement>('[role="dialog"], [role="menu"]') ?? anchor;
+}
+
+/**
+ * What an open popover owes the keyboard: focus moves in when it opens and back
+ * to the control that opened it when it closes, Tab never leaves it, and the
+ * arrows walk its choices. `close` is read through a ref so a parent that
+ * recreates the callback on every render cannot restart this effect mid-typing.
+ */
 export function useDismiss(
   ref: RefObject<HTMLDivElement | null>,
   open: boolean,
   close: () => void,
 ): void {
+  const closeRef = useRef(close);
+  closeRef.current = close;
   useEffect(() => {
     if (!open) return;
+    const box = ref.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const sheet = box ? sheetOf(box) : null;
+    const items = () => (sheet ? Array.from(sheet.querySelectorAll<HTMLElement>(FOCUSABLE)) : []);
+    items()[0]?.focus();
+
     const onPointer = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) close();
+      if (!ref.current?.contains(event.target as Node)) closeRef.current();
+    };
+    const walk = (event: KeyboardEvent, step: number) => {
+      const list = items();
+      if (list.length === 0) return;
+      event.preventDefault();
+      const at = list.indexOf(document.activeElement as HTMLElement);
+      // From outside the list the first arrow lands on the end it is heading.
+      const next =
+        at < 0 ? (step > 0 ? 0 : list.length - 1) : (at + step + list.length) % list.length;
+      list[next]?.focus();
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close();
+      if (event.key === 'Escape') {
+        closeRef.current();
+      } else if (event.key === 'ArrowDown') {
+        walk(event, 1);
+      } else if (event.key === 'ArrowUp') {
+        walk(event, -1);
+      } else if (event.key === 'Tab') {
+        walk(event, event.shiftKey ? -1 : 1);
+      }
     };
     document.addEventListener('mousedown', onPointer);
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('mousedown', onPointer);
       document.removeEventListener('keydown', onKey);
+      // Hand focus back only while it is still ours: on unmount the popover is
+      // already detached and focus has fallen to the body.
+      const inside =
+        document.activeElement === document.body ||
+        Boolean(sheet?.contains(document.activeElement));
+      if (opener && inside) opener.focus();
     };
-  }, [open, ref, close]);
+  }, [open, ref]);
 }
 
 export function ModelMenu({

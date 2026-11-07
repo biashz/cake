@@ -183,4 +183,66 @@ describe('CommandPalette', () => {
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     expect(input.getAttribute('aria-activedescendant')).toBe('palette-option-0');
   });
+
+  it('takes the keyboard when it opens and hands it back when it closes', () => {
+    const opener = document.createElement('button');
+    document.body.append(opener);
+    opener.focus();
+
+    const { rerender } = render(
+      <CommandPalette open actions={build()} recents={[]} onRun={() => {}} onClose={() => {}} />,
+    );
+    // Typing has to work without a click, or Ctrl K only half-opens the palette.
+    expect(document.activeElement).toBe(screen.getByLabelText('Command palette search'));
+
+    rerender(
+      <CommandPalette
+        open={false}
+        actions={build()}
+        recents={[]}
+        onRun={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('keeps one keyboard cursor in the list, so Tab cannot walk into the options', () => {
+    const { container } = render(
+      <CommandPalette open actions={build()} recents={[]} onRun={() => {}} onClose={() => {}} />,
+    );
+
+    const tabbable = Array.from(
+      container.querySelectorAll<HTMLElement>('button:not([tabindex="-1"]), input'),
+    );
+    expect(tabbable).toHaveLength(1);
+    expect(tabbable[0]).toBe(screen.getByLabelText('Command palette search'));
+  });
+
+  it('leaves the keyboard where it went when something else took it', () => {
+    const opener = document.createElement('button');
+    const elsewhere = document.createElement('button');
+    document.body.append(opener, elsewhere);
+    opener.focus();
+
+    const { rerender } = render(
+      <CommandPalette open actions={build()} recents={[]} onRun={() => {}} onClose={() => {}} />,
+    );
+    elsewhere.focus();
+    rerender(
+      <CommandPalette
+        open={false}
+        actions={build()}
+        recents={[]}
+        onRun={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    // Stealing focus back from a control the person chose would be the bug.
+    expect(document.activeElement).toBe(elsewhere);
+    opener.remove();
+    elsewhere.remove();
+  });
 });

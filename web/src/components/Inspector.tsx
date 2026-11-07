@@ -1355,13 +1355,38 @@ export function Inspector({
   return (
     <aside className="inspector" aria-label="Inspector">
       <div className="inspector-head">
-        <div className="tab-list" role="tablist" aria-label="Inspector sections">
+        <div
+          className="tab-list"
+          role="tablist"
+          aria-label="Inspector sections"
+          onKeyDown={(event) => {
+            const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+            if (step === 0 && event.key !== 'Home' && event.key !== 'End') return;
+            event.preventDefault();
+            const position = TABS.findIndex((item) => item.id === tab);
+            const size = TABS.length;
+            const to =
+              event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? size - 1
+                  : (position + step + size) % size;
+            const next = TABS[to];
+            if (!next || next.id === tab) return;
+            // The buttons stay in the DOM, so focus can follow the selection at once.
+            onTab(next.id);
+            document.getElementById(`tab-${next.id}`)?.focus();
+          }}
+        >
           {TABS.map((item) => (
             <button
               key={item.id}
+              id={`tab-${item.id}`}
               type="button"
               role="tab"
               aria-selected={tab === item.id}
+              aria-controls="inspector-panel"
+              tabIndex={tab === item.id ? 0 : -1}
               className={`tab${tab === item.id ? ' is-active' : ''}`}
               onClick={() => onTab(item.id)}
             >
@@ -1394,7 +1419,12 @@ export function Inspector({
         </button>
       </div>
 
-      <div className="inspector-body">
+      <div
+        className="inspector-body"
+        id="inspector-panel"
+        role="tabpanel"
+        aria-labelledby={`tab-${tab}`}
+      >
         {tab === 'changes' ? <ChangesPanel changes={changes} /> : null}
         {tab === 'plan' ? <PlanPanel tasks={plan} /> : null}
 

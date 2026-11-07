@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { spendLabel } from '../../../src/core/cost.js';
 import type { McpStatus, SessionInfo } from '../../../src/desktop/api.js';
+import { useDismiss } from './AgentMenus';
 import { Icon } from './Icons';
 
 function startOfDay(value: number): number {
@@ -96,21 +97,9 @@ export function Sidebar({
     return () => clearTimeout(timer);
   }, [confirmId]);
 
-  useEffect(() => {
-    if (!recentsOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (!otherRef.current?.contains(event.target as Node)) setRecentsOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setRecentsOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [recentsOpen]);
+  // The same keyboard contract the model and mode popovers keep: focus goes in
+  // when the menu opens, walks its items, and comes back when it closes.
+  useDismiss(otherRef, recentsOpen, () => setRecentsOpen(false));
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();

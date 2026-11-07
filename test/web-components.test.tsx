@@ -21,6 +21,8 @@ import { HeatBar } from '../web/src/components/HeatBar';
 import {
   CostPanel,
   FixControl,
+  Inspector,
+  type InspectorTab,
   McpSection,
   PlanPanel,
   RulesSection,
@@ -709,6 +711,87 @@ describe('Composer', () => {
     expect(
       screen.getByRole('button', { name: 'Remove image/png · 1 B' }).hasAttribute('disabled'),
     ).toBe(true);
+  });
+
+  const menuInit = {
+    ...composerInit(),
+    providers: [
+      {
+        id: 'anthropic',
+        label: 'Anthropic',
+        defaultModelId: 'claude-sonnet-4-5',
+        maxContext: 200_000,
+        hasKey: true,
+      },
+    ],
+    model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+    mode: 'default',
+  } as InitPayload;
+
+  /** The chip is named by what it shows: the provider and model it selects. */
+  const withMenus = (onSetMode = vi.fn()) => {
+    render(
+      <Composer
+        value=""
+        running={false}
+        disabled={false}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        init={menuInit}
+        onSetModel={vi.fn()}
+        onSetMode={onSetMode}
+      />,
+    );
+    return screen.getByRole('button', { name: /anthropic/ });
+  };
+
+  it('moves focus into the model menu and hands it back when Escape closes it', () => {
+    const trigger = withMenus();
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const menu = screen.getByRole('dialog', { name: 'Choose model' });
+    expect(menu.contains(document.activeElement)).toBe(true);
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Choose model' })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps the keyboard inside an open menu and lets the arrows walk it', () => {
+    const trigger = withMenus();
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const menu = screen.getByRole('dialog', { name: 'Choose model' });
+    const items = Array.from(menu.querySelectorAll('button, input')) as HTMLElement[];
+    const first = items[0] as HTMLElement;
+    expect(document.activeElement).toBe(first);
+
+    fireEvent.keyDown(document.body, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(items[1]);
+
+    // From the last control Tab wraps into the menu instead of leaving it.
+    (items[items.length - 1] as HTMLElement).focus();
+    fireEvent.keyDown(document.body, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+  });
+
+  it('gives the mode menu the same contract, because it is the same hook', () => {
+    const onSetMode = vi.fn();
+    const chips = withMenus(onSetMode);
+    expect(chips).toBeTruthy();
+    const mode = screen.getByRole('button', { name: /default/ });
+    mode.focus();
+    fireEvent.click(mode);
+
+    const menu = screen.getByRole('dialog', { name: 'Choose permission mode' });
+    expect(menu.contains(document.activeElement)).toBe(true);
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Choose permission mode' })).toBeNull();
+    expect(document.activeElement).toBe(mode);
   });
 });
 
@@ -1442,13 +1525,15 @@ describe('Sidebar', () => {
       waitingIds?: string[];
       /** More sessions in the list, so a rail can hold several rows at once. */
       others?: SessionInfo[];
+      /** Folders behind the workspace switcher; the menu only exists when these are non-empty. */
+      recents?: string[];
     } = {},
   ) =>
     render(
       <Sidebar
         version="0.1.0"
         workspace={{ cwd: '/repo', sessionId: 's1' }}
-        recents={[]}
+        recents={handlers.recents ?? []}
         sessions={[{ ...session, ...over }, ...(handlers.others ?? [])]}
         activeSessionId="s1"
         runningIds={handlers.runningIds ?? []}
@@ -1599,6 +1684,25 @@ describe('Sidebar', () => {
     expect(screen.queryByTestId('rail-live')).toBeNull();
     expect(screen.queryByTestId('rail-badge-waiting')).toBeNull();
   });
+
+  it('holds the recent-workspaces menu to the same keyboard contract', () => {
+    rail([rowOf('files')], {}, { recents: ['/repo/old', '/repo/newer'] });
+
+    const toggle = screen.getByRole('button', { name: 'Recent workspaces' });
+    toggle.focus();
+    fireEvent.click(toggle);
+
+    // The chip is not the menu: focus has to cross into the list of folders.
+    const menu = screen.getByRole('menu', { name: 'Recent workspaces' });
+    expect(menu.contains(document.activeElement)).toBe(true);
+
+    fireEvent.keyDown(document.body, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(menu.querySelectorAll('button')[1]);
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'Recent workspaces' })).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+  });
 });
 
 describe('FixControl', () => {
@@ -1683,5 +1787,107 @@ describe('FixControl', () => {
     expect(screen.getByRole('button', { name: 'Rebuild index' }).hasAttribute('disabled')).toBe(
       false,
     );
+  });
+});
+
+describe('Inspector tabs', () => {
+  const inspectorInit = {
+    rules: { allow: [], deny: [], files: { project: null, global: null }, conflicts: [] },
+    mcpStatus: {
+      servers: [],
+      tools: 0,
+      warnings: [],
+      rows: [],
+      files: { project: null, global: null },
+      changes: [],
+    },
+    cost: {
+      model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+      effective: { pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 },
+      source: 'builtin',
+      overrides: [],
+      builtin: [{ pattern: 'anthropic/sonnet', inputPer1M: 3, outputPer1M: 15 }],
+      configFile: '/repo/.cake/config.json',
+      board: emptyCostBoard(),
+      rollup: null,
+      workspace: null,
+    },
+  } as unknown as InitPayload;
+
+  const withTabs = (tab: InspectorTab) => {
+    const onTab = vi.fn();
+    render(
+      <Inspector
+        init={inspectorInit}
+        session={null}
+        context={null}
+        lastUsage={null}
+        changes={[]}
+        plan={[]}
+        tab={tab}
+        doctor={null}
+        doctorBusy={false}
+        onTab={onTab}
+        onClose={vi.fn()}
+        onRunDoctor={vi.fn()}
+        onApplyFix={async () => {}}
+        onReloadMcp={async () => {}}
+        onSetMcpServer={async () => {}}
+        onToggleMcpServer={async () => {}}
+        onRemoveMcpServer={async () => {}}
+        onInsertFile={vi.fn()}
+        onSetPricing={async () => {}}
+        onSetRule={async () => {}}
+        onMoveRule={async () => {}}
+      />,
+    );
+    return onTab;
+  };
+
+  it('puts only the chosen tab in the tab order', () => {
+    withTabs('plan');
+
+    const indexes = screen.getAllByRole('tab').map((tab) => (tab as HTMLButtonElement).tabIndex);
+    expect(indexes).toEqual([-1, 0, -1, -1, -1]);
+    // One Tab press reaches the section you are looking at, not the first one.
+    expect(screen.getByRole('tab', { name: 'Plan' }).tabIndex).toBe(0);
+  });
+
+  it('moves the selection and the focus together on the arrow keys', () => {
+    const onTab = withTabs('context');
+    const context = screen.getByRole('tab', { name: 'Cost' });
+
+    // A keyboard on a tab that is out of the order still gets to speak: the
+    // handler is on the group, and the group answers for all of them.
+    fireEvent.keyDown(context, { key: 'ArrowLeft' });
+    expect(onTab).toHaveBeenCalledWith('plan');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Plan' }));
+
+    onTab.mockClear();
+    fireEvent.keyDown(context, { key: 'End' });
+    expect(onTab).toHaveBeenCalledWith('files');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Files' }));
+
+    onTab.mockClear();
+    fireEvent.keyDown(context, { key: 'Home' });
+    expect(onTab).toHaveBeenCalledWith('changes');
+  });
+
+  it('wraps at the ends rather than stopping at the edge', () => {
+    const onTab = withTabs('changes');
+    const changes = screen.getByRole('tab', { name: 'Changes' });
+
+    fireEvent.keyDown(changes, { key: 'ArrowLeft' });
+    expect(onTab).toHaveBeenCalledWith('files');
+  });
+
+  it('lets every tab control the one panel, named by the tab it shows', () => {
+    withTabs('plan');
+
+    const panel = screen.getByRole('tabpanel');
+    expect(panel.getAttribute('aria-labelledby')).toBe('tab-plan');
+    for (const tab of screen.getAllByRole('tab')) {
+      expect(tab.getAttribute('aria-controls')).toBe(panel.id);
+    }
   });
 });

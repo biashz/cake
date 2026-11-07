@@ -70,9 +70,15 @@ export function CommandPalette({
 
   useEffect(() => {
     if (!open) return;
+    // Whoever held the keyboard when the palette took it gets it back, unless
+    // something else has claimed focus in the meantime.
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setQuery('');
     setActive(0);
     inputRef.current?.focus();
+    return () => {
+      if (opener && document.activeElement === document.body) opener.focus();
+    };
   }, [open]);
 
   /** Idle view: recent actions move to their own group and leave their original one. */
@@ -257,6 +263,10 @@ export function CommandPalette({
                       type="button"
                       role="option"
                       aria-selected={isActive}
+                      // The search field holds the keyboard and points at the row
+                      // through aria-activedescendant; a tabbable row would put a
+                      // second, invisible cursor in the same list.
+                      tabIndex={-1}
                       data-active={isActive || undefined}
                       data-testid="palette-option"
                       className={`palette-item${isActive ? ' is-active' : ''}`}
