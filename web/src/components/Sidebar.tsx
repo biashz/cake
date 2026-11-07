@@ -40,7 +40,7 @@ export function Sidebar({
   sessions,
   activeSessionId,
   runningIds,
-  pendingApprovals,
+  waitingIds,
   mcpStatus,
   onNewSession,
   onOpenSession,
@@ -60,7 +60,8 @@ export function Sidebar({
   activeSessionId: string | null;
   /** Sessions with a turn in flight. Another session running does not freeze this one. */
   runningIds: string[];
-  pendingApprovals: number;
+  /** Sessions holding an approval nobody has answered yet, whichever one is on screen. */
+  waitingIds: string[];
   mcpStatus: McpStatus;
   onNewSession: () => void;
   onOpenSession: (id: string) => void;
@@ -129,6 +130,11 @@ export function Sidebar({
   }, [filtered]);
 
   const mcpFailing = mcpStatus.rows.filter((row) => row.error !== null).map((row) => row.name);
+
+  // A turn blocked on an approval is not progress, so it counts once — under
+  // waiting. And a waiting session you are already looking at needs no reminder.
+  const waitingElsewhere = waitingIds.filter((id) => id !== activeSessionId);
+  const answering = runningIds.filter((id) => !waitingIds.includes(id));
 
   const startRename = (session: SessionInfo) => {
     setEditingId(session.id);
@@ -253,6 +259,29 @@ export function Sidebar({
         />
       </label>
 
+      {answering.length > 0 || waitingElsewhere.length > 0 ? (
+        <div className="rail-live" data-testid="rail-live">
+          {answering.length > 0 ? (
+            <span
+              className="rail-live-count is-running"
+              title="Conversations answering right now. They keep going while you read another."
+            >
+              <span className="rail-live-dot" aria-hidden="true" />
+              {answering.length} answering
+            </span>
+          ) : null}
+          {waitingElsewhere.length > 0 ? (
+            <span
+              className="rail-live-count is-waiting"
+              title="Conversations waiting for you in another session"
+            >
+              <span className="rail-live-dot" aria-hidden="true" />
+              {waitingElsewhere.length} waiting
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="session-list">
         {!workspace ? (
           <p className="rail-empty">Open a folder to see its sessions.</p>
@@ -268,6 +297,13 @@ export function Sidebar({
                 const active = session.id === activeSessionId;
                 const editing = session.id === editingId;
                 const busy = runningIds.includes(session.id);
+                // Stuck on a question outranks busy: a turn waiting for an
+                // approval is running, but telling you that is the useful half.
+                const waiting = waitingIds.includes(session.id);
+                // The row's second line and its dead controls trade places: a turn in
+                // flight elsewhere has nothing to branch or delete until it lands, so
+                // the rail spends that width on saying what it is doing.
+                const liveElsewhere = !active && (waiting || busy);
                 return (
                   <div key={session.id} className={`session-row${active ? ' is-active' : ''}`}>
                     {editing ? (
@@ -302,10 +338,10 @@ export function Sidebar({
                       >
                         <span
                           className={`session-dot${
-                            active && busy
-                              ? ' is-running'
-                              : active && pendingApprovals > 0
-                                ? ' is-waiting'
+                            waiting
+                              ? ' is-waiting'
+                              : busy
+                                ? ' is-running'
                                 : active
                                   ? ' is-active'
                                   : ''
@@ -316,28 +352,47 @@ export function Sidebar({
                           <span className="session-title">
                             {session.title || 'Untitled session'}
                           </span>
-                          <span
-                            className="session-meta mono"
-                            title={`spend: ${spendLabel(session.costUsd, session.unpricedTokens)}`}
-                          >
-                            {session.model} · {relativeTime(session.updatedAt)} ·{' '}
-                            {spendLabel(session.costUsd, session.unpricedTokens)}
-                          </span>
+                          {/* A turn doing something out of sight takes the row's second
+                              line: the spend it will report is not settled yet anyway,
+                              and the open session says all of this in its own transcript. */}
+                          {liveElsewhere ? (
+                            <span
+                              className={`session-status mono ${waiting ? 'is-waiting' : 'is-running'}`}
+                              data-testid={waiting ? 'rail-badge-waiting' : 'rail-badge-running'}
+                              title={
+                                waiting
+                                  ? 'Open this session to answer it'
+                                  : 'Answering — this one keeps going while you read another'
+                              }
+                            >
+                              {waiting ? 'waiting for approval' : 'answering'}
+                            </span>
+                          ) : (
+                            <span
+                              className="session-meta mono"
+                              title={`spend: ${spendLabel(session.costUsd, session.unpricedTokens)}`}
+                            >
+                              {session.model} · {relativeTime(session.updatedAt)} ·{' '}
+                              {spendLabel(session.costUsd, session.unpricedTokens)}
+                            </span>
+                          )}
                         </span>
                       </button>
                     )}
                     {!editing ? (
                       <div className="session-actions">
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label="Fork session"
-                          title="Fork session — branch this conversation into a new session"
-                          disabled={busy}
-                          onClick={() => onForkSession(session.id)}
-                        >
-                          <Icon name="copy" size={13} />
-                        </button>
+                        {liveElsewhere ? null : (
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label="Fork session"
+                            title="Fork session — branch this conversation into a new session"
+                            disabled={busy}
+                            onClick={() => onForkSession(session.id)}
+                          >
+                            <Icon name="copy" size={13} />
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="icon-button"
@@ -356,24 +411,26 @@ export function Sidebar({
                         >
                           <Icon name="pencil" size={13} />
                         </button>
-                        <button
-                          type="button"
-                          className={`icon-button${confirmId === session.id ? ' is-confirm' : ''}`}
-                          aria-label={
-                            confirmId === session.id ? 'Confirm delete session' : 'Delete session'
-                          }
-                          title={
-                            confirmId === session.id ? 'Click again to delete' : 'Delete session'
-                          }
-                          disabled={busy}
-                          onClick={() => requestDelete(session.id)}
-                        >
-                          {confirmId === session.id ? (
-                            <span className="confirm-label mono">sure?</span>
-                          ) : (
-                            <Icon name="trash" size={13} />
-                          )}
-                        </button>
+                        {liveElsewhere ? null : (
+                          <button
+                            type="button"
+                            className={`icon-button${confirmId === session.id ? ' is-confirm' : ''}`}
+                            aria-label={
+                              confirmId === session.id ? 'Confirm delete session' : 'Delete session'
+                            }
+                            title={
+                              confirmId === session.id ? 'Click again to delete' : 'Delete session'
+                            }
+                            disabled={busy}
+                            onClick={() => requestDelete(session.id)}
+                          >
+                            {confirmId === session.id ? (
+                              <span className="confirm-label mono">sure?</span>
+                            ) : (
+                              <Icon name="trash" size={13} />
+                            )}
+                          </button>
+                        )}
                       </div>
                     ) : null}
                   </div>

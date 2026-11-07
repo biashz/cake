@@ -54,3 +54,12 @@ export function dropBuffer(all: Buffers, sessionId: string): Buffers {
 export function runningIds(all: Buffers): string[] {
   return Object.keys(all).filter((id) => all[id]?.running);
 }
+
+/**
+ * The sessions holding an unanswered approval. A request waits in whichever
+ * buffer it arrived in, so one asked by a background turn is still there when
+ * you switch to it.
+ */
+export function waitingIds(all: Buffers): string[] {
+  return Object.keys(all).filter((id) => (all[id]?.approvals.length ?? 0) > 0);
+}

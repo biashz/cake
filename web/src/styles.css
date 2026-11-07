@@ -553,6 +553,65 @@ kbd {
   background: var(--warn);
 }
 
+/* The row's second line while a turn is live: text, not only a coloured dot,
+   so the state survives reduced motion and a screen reader. */
+.session-status {
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-status.is-running {
+  color: var(--layer-turn);
+}
+
+.session-status.is-waiting {
+  color: var(--warn);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.rail-live {
+  display: flex;
+  gap: 10px;
+  padding: 0 8px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.rail-live-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rail-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.rail-live-count.is-running {
+  color: var(--layer-turn);
+}
+
+.rail-live-count.is-running .rail-live-dot {
+  background: var(--layer-turn);
+  animation: heat-throb 1.6s var(--ease) infinite;
+}
+
+.rail-live-count.is-waiting {
+  color: var(--warn);
+}
+
+.rail-live-count.is-waiting .rail-live-dot {
+  background: var(--warn);
+}
+
 .session-copy {
   display: flex;
   flex-direction: column;

@@ -8,6 +8,20 @@ export interface MockRequest {
   imageParts: number;
 }
 
+export interface MockAnthropicOptions {
+  /**
+   * Answer a prompt with this plain text instead of the usual write-tool flow.
+   * Returning null leaves the turn to the tool path.
+   */
+  plainText?: (prompt: string) => string | null;
+  /**
+   * Hold every plain-text answer until this many requests are open at once.
+   * An app that runs one turn at a time never fills the queue, so a spec that
+   * needs two turns in flight fails out loud rather than passing on the first.
+   */
+  holdUntil?: number;
+}
+
 export interface MockAnthropic {
   url: string;
   requests: MockRequest[];
@@ -41,6 +55,21 @@ function imageParts(messages: Json[]): number {
     }
   }
   return found;
+}
+
+/** What the model was last asked, as one string. */
+function lastUserText(messages: Json[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'user') continue;
+    const content = message.content;
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    return content
+      .map((raw) => ((raw as Json).type === 'text' ? String((raw as Json).text ?? '') : ''))
+      .join(' ');
+  }
+  return '';
 }
 
 function textResponse(model: string, text: string) {
@@ -144,9 +173,20 @@ function writeToolResponse(model: string) {
  * Minimal Anthropic Messages streaming endpoint. The first request (no tool result
  * yet) asks for a `write` tool call; after the agent reports the result, it answers
  * with plain text. No test-only hooks in the app: the real SDK path is exercised.
+ * `plainText` swaps that for a fixed answer, and `holdUntil` withholds those
+ * answers until the app itself proves it can hold several turns open.
  */
-export async function startMockAnthropic(): Promise<MockAnthropic> {
+export async function startMockAnthropic(
+  options: MockAnthropicOptions = {},
+): Promise<MockAnthropic> {
   const requests: MockRequest[] = [];
+  const gate = options.holdUntil ?? 0;
+  const waiting: Array<() => void> = [];
+
+  /** Answer everything queued once enough turns are open at the same time. */
+  function flush(): void {
+    for (const send of waiting.splice(0)) send();
+  }
 
   const server = http.createServer((request, response) => {
     if (request.method !== 'POST') {
@@ -189,19 +229,33 @@ export async function startMockAnthropic(): Promise<MockAnthropic> {
       });
 
       const model = typeof body.model === 'string' ? body.model : 'claude-sonnet-4-5';
-      const events = toolResult
-        ? textResponse(model, 'Created hello.txt.')
-        : writeToolResponse(model);
+      const plain = options.plainText?.(lastUserText(messages)) ?? null;
+      const events =
+        plain !== null
+          ? textResponse(model, plain)
+          : toolResult
+            ? textResponse(model, 'Created hello.txt.')
+            : writeToolResponse(model);
 
-      response.writeHead(200, {
-        'content-type': 'text/event-stream',
-        'cache-control': 'no-cache',
-        connection: 'keep-alive',
-      });
-      for (const [event, data] of events) {
-        response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      const send = () => {
+        response.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+        });
+        for (const [event, data] of events) {
+          response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        }
+        response.end();
+      };
+
+      if (plain === null || gate <= 0) send();
+      else {
+        waiting.push(send);
+        // A tool turn answering is no proof of concurrency, so only a held
+        // answer counts toward the gate.
+        if (waiting.length >= gate) flush();
       }
-      response.end();
     });
   });
 

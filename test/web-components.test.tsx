@@ -1439,6 +1439,9 @@ describe('Sidebar', () => {
       onExportSession?: (id: string) => void;
       onOpenSession?: (id: string) => void;
       runningIds?: string[];
+      waitingIds?: string[];
+      /** More sessions in the list, so a rail can hold several rows at once. */
+      others?: SessionInfo[];
     } = {},
   ) =>
     render(
@@ -1446,10 +1449,10 @@ describe('Sidebar', () => {
         version="0.1.0"
         workspace={{ cwd: '/repo', sessionId: 's1' }}
         recents={[]}
-        sessions={[{ ...session, ...over }]}
+        sessions={[{ ...session, ...over }, ...(handlers.others ?? [])]}
         activeSessionId="s1"
         runningIds={handlers.runningIds ?? []}
-        pendingApprovals={0}
+        waitingIds={handlers.waitingIds ?? []}
         mcpStatus={{
           servers: rows.filter((entry) => entry.connected).map((entry) => entry.name),
           tools: rows.reduce((total, entry) => total + entry.tools, 0),
@@ -1502,10 +1505,10 @@ describe('Sidebar', () => {
     expect(onExportSession).toHaveBeenCalledWith('s9');
   });
 
-  it('locks the fork of the session that is running, and never its export', () => {
+  it('locks the fork of the running session on screen, and never its export', () => {
     const onForkSession = vi.fn();
     const onExportSession = vi.fn();
-    rail([rowOf('files')], { id: 's9' }, { onForkSession, onExportSession, runningIds: ['s9'] });
+    rail([rowOf('files')], {}, { onForkSession, onExportSession, runningIds: ['s1'] });
 
     const fork = screen.getByLabelText('Fork session') as HTMLButtonElement;
     expect(fork.disabled).toBe(true);
@@ -1516,7 +1519,22 @@ describe('Sidebar', () => {
     const exportButton = screen.getByLabelText('Export session as Markdown') as HTMLButtonElement;
     expect(exportButton.disabled).toBe(false);
     fireEvent.click(exportButton);
-    expect(onExportSession).toHaveBeenCalledWith('s9');
+    expect(onExportSession).toHaveBeenCalledWith('s1');
+  });
+
+  it('gives the status line of a running row the room its dead controls used to take', () => {
+    // Off screen and mid-turn: branching or deleting it would cut a turn in
+    // half, so those controls step out and the row says what it is doing
+    // instead. The ones that still work stay.
+    rail([rowOf('files')], { id: 's9' }, { runningIds: ['s9'] });
+
+    expect(screen.getByTestId('rail-badge-running').textContent).toBe('answering');
+    expect(screen.queryByLabelText('Fork session')).toBeNull();
+    expect(screen.queryByLabelText('Delete session')).toBeNull();
+    expect(
+      (screen.getByLabelText('Export session as Markdown') as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect((screen.getByLabelText('Rename session') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('reads another session while one is running', () => {
@@ -1534,6 +1552,52 @@ describe('Sidebar', () => {
     expect(fork.disabled).toBe(false);
     fireEvent.click(fork);
     expect(onForkSession).toHaveBeenCalledWith('s9');
+  });
+
+  it('names the session that is answering off screen', () => {
+    rail([rowOf('files')], { id: 's9' }, { runningIds: ['s9'] });
+
+    expect(screen.getByTestId('rail-badge-running').textContent).toBe('answering');
+    expect(screen.getByTestId('rail-live').textContent).toContain('1 answering');
+  });
+
+  it('opens the session that asked, from the badge it put in the rail', () => {
+    const onOpenSession = vi.fn();
+    rail([rowOf('files')], { id: 's9' }, { onOpenSession, waitingIds: ['s9'] });
+
+    const badge = screen.getByTestId('rail-badge-waiting');
+    expect(badge.textContent).toContain('waiting');
+    fireEvent.click(badge);
+    expect(onOpenSession).toHaveBeenCalledWith('s9');
+
+    expect(screen.getByTestId('rail-live').textContent).toContain('1 waiting');
+  });
+
+  it('counts a stuck turn as waiting rather than as answering', () => {
+    rail([rowOf('files')], { id: 's9' }, { runningIds: ['s9'], waitingIds: ['s9'] });
+
+    // The turn is in flight, but the thing worth reading is that it cannot move.
+    expect(screen.getByTestId('rail-badge-waiting')).toBeTruthy();
+    expect(screen.queryByTestId('rail-badge-running')).toBeNull();
+    expect(screen.getByTestId('rail-live').textContent).toBe('1 waiting');
+    // The dot follows the same precedence, or the row contradicts itself.
+    expect(String(document.querySelector('.session-dot')?.className)).toContain('is-waiting');
+  });
+
+  it('leaves a session with nothing to report unmarked', () => {
+    rail([rowOf('files')], { id: 's9' });
+
+    expect(screen.queryByTestId('rail-live')).toBeNull();
+    expect(screen.queryByTestId('rail-badge-running')).toBeNull();
+    expect(screen.queryByTestId('rail-badge-waiting')).toBeNull();
+  });
+
+  it('keeps the session you are reading out of the rail’s tally', () => {
+    rail([rowOf('files')], { id: 's9' }, { waitingIds: ['s1'], runningIds: ['s1'] });
+
+    // Its approval card and its streaming text are already in front of you.
+    expect(screen.queryByTestId('rail-live')).toBeNull();
+    expect(screen.queryByTestId('rail-badge-waiting')).toBeNull();
   });
 });
 

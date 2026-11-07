@@ -247,7 +247,8 @@ async function boot(kernel: FakeKernel) {
     },
     async open(id: string) {
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: new RegExp(`Ticket ${id}`) }));
+        // Anchored: a waiting badge names the same session, and it is not the row.
+        fireEvent.click(screen.getByRole('button', { name: new RegExp(`^Ticket ${id}`) }));
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
     },
@@ -339,9 +340,13 @@ describe('App with two sessions', () => {
 
     await kernel.ask('s2', 'p7');
     expect(screen.queryByTestId('approvals')).toBeNull();
+    // s2 is off screen and stuck, so the rail is the only place that can say so.
+    expect(screen.getByTestId('rail-badge-waiting')).toBeTruthy();
 
     await ui.open('s2');
     await waitFor(() => expect(screen.getByTestId('approval-card')).toBeTruthy());
+    // Now you are looking at it: the mark is gone, the card is not.
+    expect(screen.queryByTestId('rail-badge-waiting')).toBeNull();
 
     fireEvent.click(screen.getByTestId('approval-allow'));
     await waitFor(() => expect(kernel.answered).toEqual([{ id: 'p7', decision: 'allow' }]));
@@ -368,5 +373,44 @@ describe('App with two sessions', () => {
     expect(notes().join(' ')).toContain('index for the workspace');
     await ui.open('s1');
     expect(notes().join(' ')).not.toContain('index for the workspace');
+  });
+
+  it('marks the row of a session that is answering out of sight', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('question in the first');
+    await ui.open('s2');
+    await ui.type('question in the second');
+
+    // Two turns are in flight; only the one you are not reading needs a mark.
+    expect(screen.getByTestId('rail-badge-running').textContent).toBe('answering');
+    expect(screen.getByTestId('rail-live').textContent).toBe('2 answering');
+    expect(screen.queryByText('question in the first')).toBeNull();
+  });
+
+  it('hands back an approval from the rail row that asked for it', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('question in the first');
+    await ui.open('s2');
+    await kernel.ask('s1', 'p9');
+
+    // The card is not on this transcript, but the rail says which session holds it.
+    expect(screen.queryByTestId('approval-card')).toBeNull();
+    expect(screen.getByTestId('rail-badge-waiting').textContent).toBe('waiting for approval');
+    // A turn blocked on an approval is not progress, so it counts once.
+    expect(screen.getByTestId('rail-live').textContent).toBe('1 waiting');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('rail-badge-waiting'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await waitFor(() => expect(screen.getByTestId('approval-card')).toBeTruthy());
+    expect(screen.queryByTestId('rail-live')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('approval-allow'));
+    await waitFor(() => expect(kernel.answered).toEqual([{ id: 'p9', decision: 'allow' }]));
   });
 });

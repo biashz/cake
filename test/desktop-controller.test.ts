@@ -356,6 +356,12 @@ describe('WorkspaceController turns', () => {
       // Both requests are waiting at the same moment: neither turn queued behind the other.
       expect(mock.pending()).toBe(2);
 
+      // And each session already carries the question it asked, so the rail can
+      // say which row is which while both turns are still waiting.
+      const titled = ctrl.listSessions();
+      expect(titled.find((row) => row.id === sessionId)?.title).toContain('first session asks');
+      expect(titled.find((row) => row.id === other)?.title).toContain('second session asks');
+
       mock.reply('answer to the first');
       mock.reply('answer to the second');
       expect((await first).text).toBe('answer to the first');

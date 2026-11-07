@@ -49,6 +49,7 @@ import {
   emptyBuffer,
   type RunBuffer,
   runningIds,
+  waitingIds,
   withBuffer,
 } from './run-buffers';
 import {
@@ -200,6 +201,8 @@ export function App() {
     usage: lastUsage,
   } = buffer;
   const runningList = useMemo(() => runningIds(buffers), [buffers]);
+  /** Sessions whose approval card is unanswered, including the ones off screen. */
+  const waitingList = useMemo(() => waitingIds(buffers), [buffers]);
   /** Workspace-wide operations wait for every session; a session only waits for itself. */
   const anyRunning = runningList.length > 0;
 
@@ -1048,7 +1051,13 @@ export function App() {
     markRun(sessionId, true);
     patch(sessionId, (current) => ({ ...current, startedAt: Date.now() }));
     try {
-      await window.cake?.run(sessionId, raw, images);
+      const api = window.cake;
+      if (!api) return;
+      const turn = api.run(sessionId, raw, images);
+      // The kernel names the session as its turn starts, so reading the list
+      // now puts that title on the rail row instead of "Untitled session".
+      await refreshSessions();
+      await turn;
     } catch (err) {
       addEntry(sessionId, { role: 'error', text: message(err) });
     } finally {
@@ -1390,7 +1399,7 @@ export function App() {
           sessions={sessions}
           activeSessionId={workspace?.sessionId ?? null}
           runningIds={runningList}
-          pendingApprovals={approvals.length}
+          waitingIds={waitingList}
           mcpStatus={init.mcpStatus}
           onNewSession={() => void newSession()}
           onOpenSession={(id) => void openSession(id)}

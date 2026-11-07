@@ -376,6 +376,9 @@ export class WorkspaceController implements DesktopBackend {
       approvals: new Map(),
     };
     this.runs.set(sessionId, run);
+    // Name the session as its first turn starts, not when it ends: with two
+    // turns in flight the rail has to say which row is which while both run.
+    active.store.setTitleIfEmpty(sessionId, prompt);
     this.addTurnEntry(
       run,
       'Prompt',
@@ -420,7 +423,6 @@ export class WorkspaceController implements DesktopBackend {
         onNote: (note) => this.send('agent:note', { sessionId, note }),
       });
 
-      active.store.setTitleIfEmpty(sessionId, prompt);
       active.store.saveMessages(sessionId, result.messages);
       active.store.addTurnUsage(sessionId, result.lines);
       // Only the session on screen moves the workspace's idea of "the session".
