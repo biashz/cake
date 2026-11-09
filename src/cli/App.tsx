@@ -45,6 +45,8 @@ interface PendingApproval {
 
 export interface AppProps {
   registry: ProviderRegistry;
+  /** The workspace this session works in: tools, archives, exports hang off it. */
+  cwd: string;
   model: ModelSpec;
   permissionMode: PermissionMode;
   rules: PermissionRules;
@@ -87,6 +89,7 @@ function preview(value: unknown, max = 160): string {
 export function App(props: AppProps) {
   const {
     registry,
+    cwd,
     permissionMode,
     rules,
     system,
@@ -110,7 +113,7 @@ export function App(props: AppProps) {
   const nextId = useRef(0);
   const approvalQueue = useRef<Promise<void>>(Promise.resolve());
   const abortedRef = useRef(false);
-  const [trace] = useState(() => createTrace(process.cwd()));
+  const [trace] = useState(() => createTrace(cwd));
   const traceAnnounced = useRef(false);
   const [plan, setPlan] = useState<TaskItem[]>(() => store.plan(props.session.id));
 
@@ -134,7 +137,7 @@ export function App(props: AppProps) {
         return;
       case 'clear': {
         const next = store.create({
-          cwd: process.cwd(),
+          cwd,
           provider: model.provider,
           model: model.modelId,
         });
@@ -173,7 +176,7 @@ export function App(props: AppProps) {
       case 'revert': {
         // The session database holds what each archive was asked for; the
         // archive folder alone could only ever say that a turn exists.
-        revertTurn(checkpoints, arg, store.checkpointAsks(process.cwd())).then(
+        revertTurn(checkpoints, arg, store.checkpointAsks(cwd)).then(
           (text) => addEntry({ role: 'info', text }),
           (err: unknown) => addEntry({ role: 'error', text: `[revert] ${(err as Error).message}` }),
         );
@@ -309,7 +312,6 @@ export function App(props: AppProps) {
       }
     }
 
-    const cwd = process.cwd();
     const ctx: ToolContext = {
       cwd,
       askPermission,

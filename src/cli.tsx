@@ -164,6 +164,7 @@ async function main(): Promise<void> {
   const app = render(
     <App
       registry={registry}
+      cwd={cwd}
       model={model}
       permissionMode={mode}
       rules={settings.permissions}

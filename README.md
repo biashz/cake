@@ -87,7 +87,10 @@ cake --doctor
 
 - `@path/to/file` 把文件内容附进本条消息
 - `@codebase` 先做一次语义检索，把相关代码块附进消息
-- `/help` `/clear` `/fork` `/export [file]` `/revert [n]` `/model <id>` `/cost` `/exit`
+- `/help` `/clear` `/fork` `/export [file]` `/revert [n]` `/model <id>` `/cost` `/exit`（`/quit` 同义）——`/help` 列出的每一条都真的接得住，列进清单的名字写错一个字母就会被测试抓住
+- 审批卡只认这几个键：`y` 或 Enter 放行，`n` 或 Esc 拒绝；`Ctrl+C` 把这一轮连同卡片一起撤掉，拒掉的写操作从不落盘，`/revert list` 也不会把它算成改过文件的一轮
+- `/model <id>` 写进当前会话那一行，所以下次 `cake -c` 就从新模型回来，而不是只改这次屏幕上的显示
+- 一轮正在跑的时候键盘不接单：这时敲的字符不进队列、也不提示丢了，屏幕右下角的 `(working… Ctrl+C to cancel)` 消失之后重新敲才算数（桌面端的输入框没有这个限制，它按会话分屏）
 
 ## 权限模型
 
