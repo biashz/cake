@@ -69,7 +69,12 @@ async function main(): Promise<void> {
   const checkpoints = CheckpointStore.forWorkspace(cwd);
 
   if (values.revert !== undefined) {
-    process.stdout.write(`${await revertTurn(checkpoints, values.revert)}\n`);
+    // What each archive was asked for lives in the session database, so the
+    // list can name the job behind a number instead of only the files.
+    const sessions = SessionStore.open(defaultSessionFile(cwd));
+    const text = await revertTurn(checkpoints, values.revert, sessions.checkpointAsks(cwd));
+    sessions.close();
+    process.stdout.write(`${text}\n`);
     return;
   }
 
@@ -306,6 +311,15 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
       checkpoints,
       embedder,
       ctx,
+      // Recorded as the archive closes, so a turn that dies or is interrupted
+      // still leaves its files undoable.
+      onCheckpoint: (turn) =>
+        store.recordCheckpoint({
+          sessionId: session.id,
+          checkpointId: turn.id,
+          prompt,
+          startedAt: turn.startedAt,
+        }),
       abortSignal: controller.signal,
       onEvent: handleEvent,
       onNote: (note) => process.stderr.write(`[${note.kind}] ${note.text}\n`),
@@ -319,11 +333,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
     );
     store.setTitleIfEmpty(session.id, prompt);
     store.saveMessages(session.id, result.messages);
-    store.addTurnUsage(
-      session.id,
-      result.lines,
-      result.checkpointId ? { checkpointId: result.checkpointId, prompt } : undefined,
-    );
+    store.addTurnUsage(session.id, result.lines);
     process.stderr.write(`[session] ${session.id}\n`);
   } catch (err) {
     process.stdout.write('\n');

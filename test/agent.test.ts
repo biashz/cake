@@ -168,6 +168,37 @@ describe('runAgent multi-step tool loop', () => {
     expect(String((errors[0] as { error: Error }).error.message)).toMatch(/denied/i);
   });
 
+  it('reports a provider failure once, as one event and one throw', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 't3' },
+              { type: 'text-delta', id: 't3', delta: 'half an answer' },
+              { type: 'error', error: new Error('provider refused the request') },
+            ],
+          }),
+        },
+      ],
+    });
+
+    const events: AgentEvent[] = [];
+    await expect(
+      runAgent(
+        {
+          model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+          messages: [{ role: 'user', content: 'ask for something' }],
+          onEvent: (event) => events.push(event),
+        },
+        registryFor(model),
+      ),
+    ).rejects.toThrow(/refused the request/);
+
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(1);
+  });
+
   it('passes the system prompt as instructions, not as a history message', async () => {
     const model = new MockLanguageModelV4({
       doStream: [

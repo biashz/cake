@@ -25,20 +25,43 @@ function describeChanges(report: RewindReport): string[] {
   });
 }
 
-export async function listTurns(store: CheckpointStore): Promise<string> {
+/**
+ * The ask on one line, shortened. The list is a menu to pick a number from, not
+ * a transcript, and the number is only safe to use when the words next to it
+ * are recognisable.
+ */
+function brief(ask: string | undefined): string {
+  const oneLine = (ask ?? '').replace(/\s+/g, ' ').trim();
+  if (oneLine === '') return '(no ask recorded)';
+  return oneLine.length > 68 ? `${oneLine.slice(0, 67)}…` : oneLine;
+}
+
+/**
+ * The recorded turns, oldest first, each with the words that asked for it.
+ * `asks` comes from the session database: the archive folder alone knows that a
+ * turn exists, and a number nobody can match to a job is a number nobody can
+ * safely undo.
+ */
+export async function listTurns(
+  store: CheckpointStore,
+  asks: ReadonlyMap<string, string> = new Map(),
+): Promise<string> {
   const turns = await store.list();
   if (turns.length === 0) {
     return `no turn has changed a file cake can undo yet; ${NOT_COVERED}`;
   }
   const ids = turns.map((turn) => turn.id);
-  const rows = turns.map((turn) => {
+  const rows = turns.flatMap((turn) => {
     const time = new Date(turn.startedAt).toTimeString().slice(0, 5);
     const paths = turn.entries.map((entry) => entry.path);
     const shown =
       paths.length <= 4
         ? paths.join(', ')
         : `${paths.slice(0, 3).join(', ')} +${paths.length - 3} more`;
-    return `  ${number(ids, turn.id).padStart(3)}  ${time}  ${shown}`;
+    return [
+      `  ${number(ids, turn.id).padStart(3)}  ${time}  ${brief(asks.get(turn.id))}`,
+      `              ${shown}`,
+    ];
   });
   return [
     `${turns.length} recorded ${turns.length === 1 ? 'turn' : 'turns'}, oldest first:`,
@@ -50,9 +73,13 @@ export async function listTurns(store: CheckpointStore): Promise<string> {
 }
 
 /** Undo one recorded turn and say what moved, or why nothing did. */
-export async function revertTurn(store: CheckpointStore, arg: string): Promise<string> {
+export async function revertTurn(
+  store: CheckpointStore,
+  arg: string,
+  asks: ReadonlyMap<string, string> = new Map(),
+): Promise<string> {
   const trimmed = arg.trim();
-  if (trimmed.toLowerCase() === 'list') return listTurns(store);
+  if (trimmed.toLowerCase() === 'list') return listTurns(store, asks);
 
   const forced = /(?:^|\s)(?:--?force)(?:\s|$)/i.test(trimmed);
   const asked = trimmed.replace(/(?:^|\s)(?:--?force)(?:\s|$)/i, ' ').trim();

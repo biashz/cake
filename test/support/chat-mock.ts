@@ -29,6 +29,12 @@ export interface ChatMock {
    * answers that second request with `reply` to end the turn.
    */
   replyTool(name: string, input: Json): void;
+  /**
+   * Answer the oldest waiting request with a refusal the client will not retry:
+   * this is how a turn that has already changed a file ends in an error and
+   * reports nothing back.
+   */
+  replyFail(): void;
   /** Answer the waiting request that asked this, whatever order it arrived in. */
   replyTo(ask: string, text: string): void;
   close(): Promise<void>;
@@ -43,6 +49,8 @@ interface Gate {
   answer(text: string): void;
   /** Answer by asking for a tool instead, which sends the client away again. */
   tool(name: string, input: Json): void;
+  /** Refuse the request, which ends the client's turn in an error. */
+  fail(): void;
 }
 
 function lastUserText(body: Json): string {
@@ -167,6 +175,19 @@ export async function startChatMock(): Promise<ChatMock> {
         ask: prompt,
         answer: (text) => send(stream(text, model)),
         tool: (name, input) => send(toolStream(name, input, model)),
+        fail: () => {
+          if (answered) return;
+          answered = true;
+          if (response.destroyed) return;
+          // A status the client does not retry, so one refusal ends the turn.
+          response.writeHead(400, { 'content-type': 'application/json' });
+          response.end(
+            JSON.stringify({
+              type: 'error',
+              error: { type: 'invalid_request_error', message: 'mock provider refused' },
+            }),
+          );
+        },
       };
       held.push(gate);
       waiters.shift()?.();
@@ -206,6 +227,11 @@ export async function startChatMock(): Promise<ChatMock> {
       const next = held.shift();
       if (!next) throw new Error('No waiting request to answer');
       next.tool(name, input);
+    },
+    replyFail() {
+      const next = held.shift();
+      if (!next) throw new Error('No waiting request to answer');
+      next.fail();
     },
     replyTo(ask, text) {
       const at = held.findIndex((gate) => gate.ask.includes(ask));

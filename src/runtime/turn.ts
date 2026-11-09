@@ -42,6 +42,12 @@ export interface TurnOptions {
    * can be undone. Absent means no undo for this turn; nothing else changes.
    */
   checkpoints?: CheckpointStore;
+  /**
+   * Told which archive the turn closed, the moment it closes. Every turn that
+   * changed a file gets one — including one that ended in an error or a stop,
+   * which is when an undo is wanted most, and which reports nothing else.
+   */
+  onCheckpoint?: (turn: CheckpointTurn) => void;
   /** Rate-card additions from config, used when costing this turn. */
   pricing?: PricingOverrides;
   embedder?: Embedder;
@@ -59,12 +65,6 @@ export interface TurnResult {
   costUsd: number;
   /** The same spend, split by model and by the child agent that caused it. */
   lines: CostLine[];
-  /**
-   * The checkpoint this turn closed, so the turn can be pointed at later by
-   * name instead of by position. Absent when nothing was archived or when the
-   * run had no store to archive into.
-   */
-  checkpointId?: string;
 }
 
 /** Text alone stays a plain string; one image turns the prompt into content parts. */
@@ -179,7 +179,6 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
   };
 
   let result: Awaited<ReturnType<typeof runAgent>>;
-  let closed: CheckpointTurn | undefined;
   try {
     result = await runAgent(
       {
@@ -195,8 +194,10 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
     );
   } finally {
     // Cancelled or failed is exactly when an undo is wanted, so the manifest
-    // closes on every path out of the turn.
-    closed = await undo?.finish();
+    // closes on every path out of the turn and is named to the caller there,
+    // before the turn itself has anything else to report.
+    const closed = await undo?.finish();
+    if (closed) options.onCheckpoint?.(closed);
   }
 
   lines.unshift(
@@ -209,6 +210,5 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
     usage: addUsage(result.usage, nestedUsage),
     costUsd: result.costUsd + nestedCostUsd,
     lines,
-    ...(closed ? { checkpointId: closed.id } : {}),
   };
 }

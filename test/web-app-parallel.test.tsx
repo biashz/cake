@@ -36,8 +36,8 @@ interface FakeKernel {
   archives: Record<string, CheckpointTurnRow[]>;
   /** Answer a pending turn: write its exchange to the store, then close the run. */
   settle(sessionId: string, answer: string, undo?: { path: string }): Promise<void>;
-  /** Close a pending turn with an error, leaving nothing in the store. */
-  fail(sessionId: string, message: string): Promise<void>;
+  /** Close a pending turn with an error, leaving nothing but its archive. */
+  fail(sessionId: string, message: string, undo?: { path: string }): Promise<void>;
   emit(sessionId: string, event: unknown): Promise<void>;
   note(sessionId: string | undefined, text: string): Promise<void>;
   ask(sessionId: string, id: string): Promise<void>;
@@ -60,6 +60,14 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
   const reverts: { checkpointId: string; force: boolean }[] = [];
   const archives: Record<string, CheckpointTurnRow[]> = { s1: [], s2: [] };
   let archived = 0;
+  /** What the kernel keeps when a turn that moved a file closes, however it ends. */
+  function nameArchive(sessionId: string, prompt: string, file: string): void {
+    archived += 1;
+    archives[sessionId] = [
+      ...(archives[sessionId] ?? []),
+      { checkpointId: `c-${archived}`, prompt, startedAt: archived, files: [file] },
+    ];
+  }
 
   const session = (id: string): SessionInfo => ({
     id,
@@ -225,18 +233,7 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
         { role: 'assistant', content: answer },
       ];
       // ...and names the archive it closed with the same prompt, when the turn moved a file.
-      if (undo) {
-        archived += 1;
-        archives[sessionId] = [
-          ...(archives[sessionId] ?? []),
-          {
-            checkpointId: `c-${archived}`,
-            prompt,
-            startedAt: archived,
-            files: [undo.path],
-          },
-        ];
-      }
+      if (undo) nameArchive(sessionId, prompt, undo.path);
       await send(() => {
         for (const handler of events) {
           handler({
@@ -258,11 +255,20 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
       });
     },
     /** End a turn the way the kernel does when the provider cannot be reached. */
-    fail: async (sessionId, message) => {
+    fail: async (sessionId, message, undo) => {
       const reject = failers.get(sessionId);
       if (!reject) throw new Error(`no turn running in ${sessionId}`);
       failers.delete(sessionId);
       waiters.delete(sessionId);
+      // A turn that died still names the archive it closed: that is the whole
+      // point of the record, and it stores nothing else.
+      if (undo) {
+        nameArchive(
+          sessionId,
+          turns.find((turn) => turn.sessionId === sessionId)?.prompt ?? '',
+          undo.path,
+        );
+      }
       await send(() => reject(new Error(message)));
     },
     emit: (sessionId, event) =>
@@ -613,6 +619,19 @@ describe('App undo wiring', () => {
     await waitFor(() =>
       expect(screen.getByTestId('turn-undo-list').textContent).toContain('src/parser.ts put back'),
     );
+  });
+
+  it('gives the undo to a turn the provider refused', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('rewrite the parser');
+    // The turn ended in an error with the file already changed, and nothing was
+    // written to the transcript: this card is the only place to give it back.
+    await kernel.fail('s1', 'provider refused the request', { path: 'src/parser.ts' });
+
+    await waitFor(() => expect(screen.getByTestId('turn-undo')).toBeTruthy());
+    expect(screen.getByTestId('turn-undo').textContent).toContain('src/parser.ts goes back');
   });
 
   it('takes the offer away when the archive behind it is gone', async () => {

@@ -171,7 +171,9 @@ export function App(props: AppProps) {
         return;
       }
       case 'revert': {
-        revertTurn(checkpoints, arg).then(
+        // The session database holds what each archive was asked for; the
+        // archive folder alone could only ever say that a turn exists.
+        revertTurn(checkpoints, arg, store.checkpointAsks(process.cwd())).then(
           (text) => addEntry({ role: 'info', text }),
           (err: unknown) => addEntry({ role: 'error', text: `[revert] ${(err as Error).message}` }),
         );
@@ -341,6 +343,15 @@ export function App(props: AppProps) {
         checkpoints,
         embedder,
         ctx,
+        // Recorded as the archive closes, so a turn that throws or is stopped
+        // still leaves its files undoable.
+        onCheckpoint: (turn) =>
+          store.recordCheckpoint({
+            sessionId: session.id,
+            checkpointId: turn.id,
+            prompt: typed,
+            startedAt: turn.startedAt,
+          }),
         abortSignal: controller.signal,
         onEvent: handleEvent,
         onNote: (note) =>
@@ -358,11 +369,7 @@ export function App(props: AppProps) {
       historyRef.current = result.messages;
       store.setTitleIfEmpty(session.id, typed);
       store.saveMessages(session.id, result.messages);
-      store.addTurnUsage(
-        session.id,
-        result.lines,
-        result.checkpointId ? { checkpointId: result.checkpointId, prompt: typed } : undefined,
-      );
+      store.addTurnUsage(session.id, result.lines);
       const updated = store.get(session.id);
       if (updated) setSession(updated);
       const meta = `${result.usage.totalTokens} tokens · ${spendLabel(

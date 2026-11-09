@@ -5,7 +5,7 @@ import { simulateReadableStream } from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { CheckpointStore } from '../src/core/checkpoints.js';
+import { CheckpointStore, type CheckpointTurn } from '../src/core/checkpoints.js';
 import type { AgentEvent, TokenUsage } from '../src/core/events.js';
 import { imageDataUrl, MAX_IMAGES_PER_TURN } from '../src/core/images.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
@@ -251,16 +251,54 @@ describe('runTurn checkpoints', () => {
       },
     });
 
-    await expect(turnFor(model, { checkpoints })).rejects.toThrow('provider died mid-turn');
+    const closed: CheckpointTurn[] = [];
+    await expect(
+      turnFor(model, {
+        checkpoints,
+        onCheckpoint: (turn: CheckpointTurn) => void closed.push(turn),
+      }),
+    ).rejects.toThrow('provider died mid-turn');
     // The write happened, so the undo has to have been recorded: this is the
     // turn nobody wants to keep.
     const turns = await checkpoints.list();
     const first = turns[0];
     if (!first) throw new Error('a failed turn left no checkpoint');
+    // Told on the way out, before the turn had anything to report: a caller who
+    // stores the link here keeps the undo of a turn that never billed a token.
+    expect(closed.map((turn) => turn.id)).toEqual([first.id]);
     expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('half done\n');
 
     await checkpoints.rewind(first.id);
     expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('original\n');
+  });
+
+  it('names the archive when the turn is stopped part-way', async () => {
+    await writeFile(path.join(cwd, 'a.ts'), 'original\n', 'utf8');
+    const checkpoints = CheckpointStore.forWorkspace(cwd);
+    const stop = new AbortController();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 1) return toolCallStream('write', { path: 'a.ts', content: 'half done\n' });
+        // What pressing Stop does to a turn that is mid-flight.
+        stop.abort();
+        throw new Error('agent stopped');
+      },
+    });
+
+    const closed: CheckpointTurn[] = [];
+    const result = await turnFor(model, {
+      checkpoints,
+      abortSignal: stop.signal,
+      onCheckpoint: (turn: CheckpointTurn) => void closed.push(turn),
+    });
+    // Stopping a turn is not an error: the answer so far is kept, and so is the
+    // way back. The turn that writes and then throws is the one with no result
+    // to carry an archive id, and it still gets told.
+    expect(closed).toHaveLength(1);
+    expect(result.text).toBe('');
+    expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('half done\n');
   });
 
   it('names the archive it closed, so a turn card can point at its own undo', async () => {
@@ -273,10 +311,16 @@ describe('runTurn checkpoints', () => {
       ],
     });
 
-    const result = await turnFor(model, { checkpoints });
-    const turn = await checkpoints.get(result.checkpointId ?? '');
-    if (!turn) throw new Error('the reported id names no archive');
-    expect(turn.entries.map((entry) => entry.path)).toEqual(['a.ts']);
+    const closed: CheckpointTurn[] = [];
+    await turnFor(model, {
+      checkpoints,
+      onCheckpoint: (turn: CheckpointTurn) => void closed.push(turn),
+    });
+    const first = closed[0];
+    if (!first) throw new Error('the turn closed an archive nobody was told about');
+    // The archive the caller was handed is the one the workspace now holds.
+    expect(await checkpoints.get(first.id)).toEqual(first);
+    expect(first.entries.map((entry) => entry.path)).toEqual(['a.ts']);
   });
 
   it('records nothing when the run was not told to archive', async () => {
@@ -289,19 +333,24 @@ describe('runTurn checkpoints', () => {
       ],
     });
 
-    const result = await turnFor(model);
+    const closed: CheckpointTurn[] = [];
+    await turnFor(model, { onCheckpoint: (turn: CheckpointTurn) => void closed.push(turn) });
     expect(await checkpoints.list()).toEqual([]);
-    expect(result.checkpointId).toBeUndefined();
+    expect(closed).toEqual([]);
   });
 
   it('names no archive for a turn that changed no file', async () => {
     const checkpoints = CheckpointStore.forWorkspace(cwd);
     const model = new MockLanguageModelV4({ doStream: [textStream('nothing to undo')] });
 
-    const result = await turnFor(model, { checkpoints });
+    const closed: CheckpointTurn[] = [];
+    await turnFor(model, {
+      checkpoints,
+      onCheckpoint: (turn: CheckpointTurn) => void closed.push(turn),
+    });
     // A card with nothing to undo shows no Undo button, so the absence has to
     // be a fact about the turn rather than a missing file in the store.
-    expect(result.checkpointId).toBeUndefined();
+    expect(closed).toEqual([]);
     expect(await checkpoints.list()).toEqual([]);
   });
 });

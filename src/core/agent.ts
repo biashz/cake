@@ -49,6 +49,11 @@ export async function runAgent(run: AgentRun, registry: ProviderRegistry): Promi
     instructions: run.system,
     messages: run.messages,
     ...(hasTools ? { tools: run.tools, stopWhen: stepCountIs(run.maxSteps ?? 20) } : {}),
+    // Every provider failure also arrives below as an `error` part, which this
+    // loop turns into an event and a throw. The SDK's default would additionally
+    // dump the whole error object on stderr, so a `cake -p` user got one failure
+    // reported twice: once in words and once as a wall of internals.
+    onError: () => {},
     abortSignal: run.abortSignal,
   });
 

@@ -469,19 +469,23 @@ export class WorkspaceController implements DesktopBackend {
         embedder: active.embedder,
         ctx: this.toolContext(active, sessionId, run),
         checkpoints: active.checkpoints,
+        // Name the archive as it closes, not when the turn reports: a turn that
+        // throws or is stopped has no result to carry the id in, and it is the
+        // turn whose files nobody wants to keep.
+        onCheckpoint: (turn) =>
+          active.store.recordCheckpoint({
+            sessionId,
+            checkpointId: turn.id,
+            prompt,
+            startedAt: turn.startedAt,
+          }),
         abortSignal: run.abort.signal,
         onEvent: emit,
         onNote: (note) => this.send('agent:note', { sessionId, note }),
       });
 
       active.store.saveMessages(sessionId, result.messages);
-      active.store.addTurnUsage(
-        sessionId,
-        result.lines,
-        // The prompt is kept with the archive because the transcript card that
-        // offers this undo is found by what it asked for, not by its position.
-        result.checkpointId ? { checkpointId: result.checkpointId, prompt } : undefined,
-      );
+      active.store.addTurnUsage(sessionId, result.lines);
       // Only the session on screen moves the workspace's idea of "the session".
       if (active.session.id === sessionId)
         active.session = active.store.get(sessionId) ?? active.session;

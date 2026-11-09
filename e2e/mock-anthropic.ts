@@ -28,6 +28,12 @@ export interface MockAnthropicOptions {
    */
   writes?: (prompt: string) => MockWrite | null;
   /**
+   * Refuse the request that closes a turn whose prompt matches, after the write
+   * it asked for has already happened. This is the turn that ends in an error
+   * with the file changed and nothing to report.
+   */
+  fails?: (prompt: string) => boolean;
+  /**
    * Hold every plain-text answer until this many requests are open at once.
    * An app that runs one turn at a time never fills the queue, so a spec that
    * needs two turns in flight fails out loud rather than passing on the first.
@@ -210,6 +216,8 @@ export async function startMockAnthropic(
   const waiting: Array<() => void> = [];
   /** The file the last tool call wrote, so the reply that closes the turn names it. */
   let wrote = DEFAULT_WRITE.path;
+  /** Set by a tool answer the prompt asked to fail, and cleared by the next request. */
+  let refusalPending = false;
 
   /** Answer everything queued once enough turns are open at the same time. */
   function flush(): void {
@@ -257,12 +265,31 @@ export async function startMockAnthropic(
       });
 
       const model = typeof body.model === 'string' ? body.model : 'claude-sonnet-4-5';
-      const plain = options.plainText?.(lastUserText(messages)) ?? null;
+      const asked = lastUserText(messages);
+      // The flag means only one thing: the request that follows this tool call
+      // has to be refused. Every request clears it, and only a tool answer that
+      // a failing prompt asked for puts it back, so a stale refusal can never
+      // land on a later turn.
+      const mustRefuse = justReported(messages) && refusalPending;
+      refusalPending = false;
+      if (mustRefuse) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify({
+            type: 'error',
+            error: { type: 'overloaded_error', message: 'mock provider refused' },
+          }),
+        );
+        return;
+      }
+      const plain = options.plainText?.(asked) ?? null;
       // A forced write applies only where a turn opens: mid-flight the answer has
       // to close the turn, or the tool call it asks for never ends.
-      const forced = justReported(messages)
-        ? null
-        : (options.writes?.(lastUserText(messages)) ?? null);
+      const forced = justReported(messages) ? null : (options.writes?.(asked) ?? null);
+      // A refusal only ever follows a write, so only a request this answers with
+      // a tool call can arm one.
+      const willWrite = plain === null && (forced !== null || !toolResult);
+      if (options.fails && willWrite) refusalPending = options.fails(asked);
       let events: SseEvents;
       if (plain !== null) events = textResponse(model, plain);
       else if (forced !== null) {

@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CheckpointStore } from '../src/core/checkpoints.js';
 import type { CostLine } from '../src/core/cost.js';
 import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_TURN } from '../src/core/images.js';
@@ -660,7 +660,7 @@ describe('WorkspaceController undo', () => {
     await ctrl.setMode('acceptEdits');
     const sessionId = init.workspace?.sessionId;
     if (!sessionId) throw new Error('opening a workspace did not give a session');
-    return { ctrl, cwd, mock, sessionId };
+    return { ctrl, cwd, home, mock, sessionId };
   }
 
   /** One model call that asks for a write, then the words that close the turn. */
@@ -679,6 +679,100 @@ describe('WorkspaceController undo', () => {
     mock.reply('written');
     await run;
   }
+
+  /**
+   * The same write, then a provider that refuses: the file is changed and the
+   * turn reports nothing, which is the case an undo has to survive.
+   */
+  async function writeThenFail(
+    ctrl: WorkspaceController,
+    mock: Awaited<ReturnType<typeof undoScenario>>['mock'],
+    sessionId: string,
+    ask: string,
+    path: string,
+    content: string,
+  ) {
+    const run = ctrl.run(sessionId, ask);
+    await mock.arrived(mock.requests.length + 1);
+    mock.replyTool('write', { path, content });
+    await mock.arrived(mock.requests.length + 1);
+    mock.replyFail();
+    await expect(run).rejects.toThrow();
+  }
+
+  it('names the archive of a turn the provider died on, and gives the file back', async () => {
+    const { ctrl, cwd, mock, sessionId } = await undoScenario('undo-failed');
+    try {
+      writeFileSync(join(cwd, 'a.ts'), 'before\n', 'utf8');
+      await writeThenFail(ctrl, mock, sessionId, 'rewrite a.ts', 'a.ts', 'after\n');
+      // The turn failed after the write, so the damage is on disk while the
+      // transcript, the cost lines and the answer were all never saved.
+      expect(readFileSync(join(cwd, 'a.ts'), 'utf8')).toBe('after\n');
+      const store = SessionStore.open(defaultSessionFile(cwd));
+      expect(store.messages(sessionId)).toEqual([]);
+      store.close();
+
+      const rows = await ctrl.checkpointTurns(sessionId);
+      expect(rows.map((row) => row.files)).toEqual([['a.ts']]);
+      const first = rows[0];
+      if (!first) throw new Error('a failed turn recorded no archive');
+      expect(first.prompt).toBe('rewrite a.ts');
+
+      const result = await ctrl.revertCheckpoint(first.checkpointId);
+      expect(result.changes).toEqual([{ path: 'a.ts', action: 'restored' }]);
+      expect(readFileSync(join(cwd, 'a.ts'), 'utf8')).toBe('before\n');
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('reports a turn the provider refused once, and never as a dump on stderr', async () => {
+    const { ctrl, cwd, mock, sessionId } = await undoScenario('undo-quiet');
+    // The vendor logs each provider error itself unless the caller takes them on,
+    // and this kernel does: the failure arrives as an event and as a throw. Left
+    // alone, one bad turn is reported twice — once in words and once as the whole
+    // error object, symbols and all.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      writeFileSync(join(cwd, 'a.ts'), 'before\n', 'utf8');
+      await writeThenFail(ctrl, mock, sessionId, 'rewrite a.ts', 'a.ts', 'after\n');
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('keeps a failed turn’s archive on offer after the workspace is reopened', async () => {
+    const { ctrl, cwd, home, mock, sessionId } = await undoScenario('undo-failed-reopen');
+    let again: WorkspaceController | null = null;
+    try {
+      writeFileSync(join(cwd, 'a.ts'), 'before\n', 'utf8');
+      await writeThenFail(ctrl, mock, sessionId, 'rewrite a.ts', 'a.ts', 'after\n');
+      const id = (await ctrl.checkpointTurns(sessionId))[0]?.checkpointId;
+      if (!id) throw new Error('a failed turn recorded no archive');
+      await ctrl.dispose();
+
+      // Nothing about the turn reached the transcript, so the link stands on its
+      // own record, and reopening the workspace has to find it there.
+      again = new WorkspaceController({
+        stateFile: join(home, 'state.json'),
+        send: () => {},
+        env: { ANTHROPIC_API_KEY: 'test-key', ANTHROPIC_BASE_URL: mock.url },
+        homeDir: home,
+      });
+      const init = await again.openWorkspace(cwd);
+      expect(init.workspace?.sessionId).toBe(sessionId);
+      const rows = await again.checkpointTurns(sessionId);
+      expect(rows.map((row) => row.checkpointId)).toEqual([id]);
+      expect(rows[0]?.prompt).toBe('rewrite a.ts');
+    } finally {
+      await again?.dispose();
+      await mock.close();
+    }
+  });
 
   it('names the archive a turn closed, and hands the file back', async () => {
     const { ctrl, cwd, mock, sessionId } = await undoScenario('undo');

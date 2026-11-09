@@ -137,14 +137,20 @@ const SCHEMA = `
   -- a turn pointing at a checkpoint that was never ours.
   CREATE TABLE IF NOT EXISTS turn_checkpoints (
     session_id TEXT NOT NULL,
-    turn INTEGER NOT NULL,
+    -- Keyed by the archive, not by the turn that made it. A turn that failed or
+    -- was cancelled billed nothing and may have no transcript at all, but the
+    -- files it changed still need giving back, so the link cannot lean on the
+    -- billing row that never gets written.
     checkpoint_id TEXT NOT NULL,
     -- The prompt that opened the turn, kept because it is the only description of
     -- a turn both this table and a transcript card can compare. Turn numbers
     -- cannot be that key: history compression rewrites the stored messages, so
     -- the turn a card shows and the turn that was billed drift apart for ever.
     prompt TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (session_id, turn)
+    -- When the archive opened, so the list is in the order the turns ran even
+    -- for the ones that never billed a token.
+    started_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, checkpoint_id)
   );
 `;
 
@@ -177,6 +183,40 @@ export class SessionStore {
     );
     if (!linkColumns.has('prompt')) {
       this.db.exec(`ALTER TABLE turn_checkpoints ADD COLUMN prompt TEXT NOT NULL DEFAULT ''`);
+    }
+    // A link keyed by its turn number was keyed by something that can move.
+    // Rewriting the table takes the number out of the answer and keeps the
+    // timestamp it used to share a row with.
+    if (linkColumns.has('turn')) {
+      this.db.exec('BEGIN');
+      try {
+        this.db.exec(`
+          CREATE TABLE turn_checkpoints_rekeyed (
+            session_id TEXT NOT NULL,
+            checkpoint_id TEXT NOT NULL,
+            prompt TEXT NOT NULL DEFAULT '',
+            started_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (session_id, checkpoint_id)
+          );
+          INSERT INTO turn_checkpoints_rekeyed (session_id, checkpoint_id, prompt, started_at)
+          SELECT session_id,
+                 checkpoint_id,
+                 prompt,
+                 COALESCE(
+                   (SELECT MIN(u.occurred_at) FROM turn_usage u
+                     WHERE u.session_id = turn_checkpoints.session_id
+                       AND u.turn = turn_checkpoints.turn),
+                   0
+                 )
+            FROM turn_checkpoints;
+          DROP TABLE turn_checkpoints;
+          ALTER TABLE turn_checkpoints_rekeyed RENAME TO turn_checkpoints;
+        `);
+        this.db.exec('COMMIT');
+      } catch (err) {
+        this.db.exec('ROLLBACK');
+        throw err;
+      }
     }
   }
 
@@ -333,16 +373,11 @@ export class SessionStore {
    * Bill one turn: one row per model that ran, then the session roll-up from the
    * same lines, so the two can never disagree. Turns are numbered per session.
    *
-   * The turn's undo archive is named in the same transaction, with the prompt
-   * that opened the turn kept beside it. That prompt is what lets a transcript
-   * card find its own undo later: turn numbers cannot do the job, because a
-   * compressed or failed turn changes what the nth turn is.
+   * A turn's undo archive is named by recordCheckpoint, not here: a turn that
+   * threw or was stopped has lines nobody asked to keep, and giving its files
+   * back is the last thing anyone wants to lose.
    */
-  addTurnUsage(
-    id: string,
-    lines: readonly CostLine[],
-    undo?: { checkpointId: string; prompt: string },
-  ): void {
+  addTurnUsage(id: string, lines: readonly CostLine[]): void {
     if (lines.length === 0) return;
     const last = this.db
       .prepare('SELECT MAX(turn) AS turn FROM turn_usage WHERE session_id = ?')
@@ -391,19 +426,32 @@ export class SessionStore {
            WHERE id = ?`,
         )
         .run(totalTokens, costUsd, unpricedTokens, now, id);
-      if (undo !== undefined) {
-        this.db
-          .prepare(
-            `INSERT OR REPLACE INTO turn_checkpoints (session_id, turn, checkpoint_id, prompt)
-             VALUES (?, ?, ?, ?)`,
-          )
-          .run(id, turn, undo.checkpointId, undo.prompt);
-      }
       this.db.exec('COMMIT');
     } catch (err) {
       this.db.exec('ROLLBACK');
       throw err;
     }
+  }
+
+  /**
+   * Name the undo archive a turn closed, with the prompt that opened it. Called
+   * as the archive closes rather than when the turn is reported, so a turn that
+   * ended in an error or a stop keeps its way back. The prompt is the whole key
+   * a transcript card has to recognise its own undo.
+   */
+  recordCheckpoint(archive: {
+    sessionId: string;
+    checkpointId: string;
+    prompt: string;
+    startedAt: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO turn_checkpoints
+         (session_id, checkpoint_id, prompt, started_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(archive.sessionId, archive.checkpointId, archive.prompt, archive.startedAt);
   }
 
   /** Every billed line of one session, oldest turn first. */
@@ -428,21 +476,41 @@ export class SessionStore {
   }
 
   /**
-   * Which turn closed which undo archive, oldest turn first, with the prompt that
-   * opened it. A turn is missing from this list when it changed no file, which is
-   * the common case and not a failure to record.
+   * Which turn closed which undo archive, oldest archive first, with the prompt
+   * that opened it. A turn is missing from this list when it changed no file,
+   * which is the common case and not a failure to record.
    */
-  turnCheckpoints(id: string): Array<{ turn: number; checkpointId: string; prompt: string }> {
+  turnCheckpoints(id: string): Array<{ checkpointId: string; prompt: string; startedAt: number }> {
     const rows = this.db
       .prepare(
-        'SELECT turn, checkpoint_id, prompt FROM turn_checkpoints WHERE session_id = ? ORDER BY turn',
+        `SELECT checkpoint_id, prompt, started_at FROM turn_checkpoints
+          WHERE session_id = ? ORDER BY started_at, checkpoint_id`,
       )
-      .all(id) as unknown as Array<{ turn: number; checkpoint_id: string; prompt: string }>;
+      .all(id) as unknown as Array<{
+      checkpoint_id: string;
+      prompt: string;
+      started_at: number;
+    }>;
     return rows.map((row) => ({
-      turn: row.turn,
       checkpointId: row.checkpoint_id,
       prompt: row.prompt,
+      startedAt: Number(row.started_at),
     }));
+  }
+
+  /**
+   * What each archive of one workspace was asked for, by archive id. Turn
+   * numbers cannot say that across a workspace: they restart per session, and
+   * the undo archive belongs to the folder, not to one conversation in it.
+   */
+  checkpointAsks(cwd: string): Map<string, string> {
+    const rows = this.db
+      .prepare(
+        `SELECT t.checkpoint_id, t.prompt FROM turn_checkpoints t
+          JOIN sessions s ON s.id = t.session_id WHERE s.cwd = ?`,
+      )
+      .all(cwd) as unknown as Array<{ checkpoint_id: string; prompt: string }>;
+    return new Map(rows.map((row) => [row.checkpoint_id, row.prompt]));
   }
 
   /**

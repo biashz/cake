@@ -351,9 +351,12 @@ describe('SessionStore turn detail', () => {
   it('drops turn detail with the session', () => {
     const store = SessionStore.inMemory();
     const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
-    store.addTurnUsage(meta.id, [line({ costUsd: 0.01, usage: usage(100) })], {
+    store.addTurnUsage(meta.id, [line({ costUsd: 0.01, usage: usage(100) })]);
+    store.recordCheckpoint({
+      sessionId: meta.id,
       checkpointId: 'turn-1',
       prompt: 'do the thing',
+      startedAt: 1,
     });
 
     store.delete(meta.id);
@@ -365,29 +368,121 @@ describe('SessionStore turn detail', () => {
 });
 
 describe('SessionStore turn checkpoints', () => {
-  it('keeps the prompt that opened the turn beside the archive it closed', () => {
+  /** Rewrite the archive table to the shape an older cake wrote, then fill it. */
+  function writeOldLinks(
+    file: string,
+    rows: Array<{ session: string; turn: number; id: string; prompt?: string }>,
+  ): void {
+    const kept = new DatabaseSync(file);
+    const both = rows.every((row) => row.prompt !== undefined);
+    kept.exec('DROP TABLE IF EXISTS turn_checkpoints');
+    kept.exec(
+      `CREATE TABLE turn_checkpoints (
+         session_id TEXT NOT NULL,
+         turn INTEGER NOT NULL,
+         checkpoint_id TEXT NOT NULL${both ? ",\n         prompt TEXT NOT NULL DEFAULT ''" : ''},
+         PRIMARY KEY (session_id, turn)
+       )`,
+    );
+    for (const row of rows) {
+      if (row.prompt === undefined) {
+        kept
+          .prepare('INSERT INTO turn_checkpoints VALUES (?, ?, ?)')
+          .run(row.session, row.turn, row.id);
+      } else {
+        kept
+          .prepare('INSERT INTO turn_checkpoints VALUES (?, ?, ?, ?)')
+          .run(row.session, row.turn, row.id, row.prompt);
+      }
+    }
+    kept.close();
+  }
+
+  it('names an archive for a turn that billed nothing', () => {
+    // The turn that threw or was stopped has no cost lines and often no
+    // transcript at all, and it is the one whose files nobody wants to keep.
     const store = SessionStore.inMemory();
     const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    store.recordCheckpoint({
+      sessionId: meta.id,
+      checkpointId: '1700000000000-aaaa1111',
+      prompt: 'split the parser',
+      startedAt: 1_700_000_000_000,
+    });
 
-    store.addTurnUsage(meta.id, [line()], { checkpointId: 'first', prompt: 'rename the file' });
-    // A billed turn that changed no file leaves no archive, so it has nothing to name.
-    store.addTurnUsage(meta.id, [line(), line({ scope: 'subagent', agentType: 'Explore' })]);
-    store.addTurnUsage(meta.id, [line()], { checkpointId: 'third', prompt: 'fix it again' });
-
+    expect(store.turnUsage(meta.id)).toEqual([]);
     expect(store.turnCheckpoints(meta.id)).toEqual([
-      { turn: 1, checkpointId: 'first', prompt: 'rename the file' },
-      { turn: 3, checkpointId: 'third', prompt: 'fix it again' },
+      {
+        checkpointId: '1700000000000-aaaa1111',
+        prompt: 'split the parser',
+        startedAt: 1_700_000_000_000,
+      },
     ]);
-    expect(store.turnUsage(meta.id).map((row) => row.turn)).toEqual([1, 2, 2, 3]);
     store.close();
   });
 
-  it('records nothing for a turn that has no archive', () => {
+  it('keeps the archive of a retry beside the one that failed', () => {
     const store = SessionStore.inMemory();
     const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
-    store.addTurnUsage(meta.id, [line()]);
+    // Turn-numbered, these two shared a key and the retry overwrote the first,
+    // hiding the very archive someone would want.
+    store.recordCheckpoint({
+      sessionId: meta.id,
+      checkpointId: 'failed',
+      prompt: 'fix it',
+      startedAt: 2,
+    });
+    store.recordCheckpoint({
+      sessionId: meta.id,
+      checkpointId: 'retry',
+      prompt: 'fix it',
+      startedAt: 3,
+    });
 
-    expect(store.turnCheckpoints(meta.id)).toEqual([]);
+    expect(store.turnCheckpoints(meta.id).map((row) => row.checkpointId)).toEqual([
+      'failed',
+      'retry',
+    ]);
+    store.close();
+  });
+
+  it('lists a session’s archives oldest first, however they were written', () => {
+    const store = SessionStore.inMemory();
+    const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    // The dates and the ids disagree on purpose. A migrated archive carries the
+    // moment its turn billed, which is later than the millisecond in its own id,
+    // so id order alone would put it after a newer turn that started before it.
+    store.recordCheckpoint({
+      sessionId: meta.id,
+      checkpointId: 'third',
+      prompt: 'c',
+      startedAt: 30,
+    });
+    store.recordCheckpoint({
+      sessionId: meta.id,
+      checkpointId: 'first',
+      prompt: 'a',
+      startedAt: 10,
+    });
+    store.recordCheckpoint({
+      sessionId: meta.id,
+      checkpointId: 'second',
+      prompt: 'b',
+      startedAt: 20,
+    });
+    store.recordCheckpoint({
+      sessionId: meta.id,
+      checkpointId: 'a-early-id',
+      prompt: 'd',
+      startedAt: 15,
+    });
+
+    expect(store.turnCheckpoints(meta.id).map((row) => row.checkpointId)).toEqual([
+      'first',
+      'a-early-id',
+      'second',
+      'third',
+    ]);
     store.close();
   });
 
@@ -395,35 +490,98 @@ describe('SessionStore turn checkpoints', () => {
     const file = defaultSessionFile(dir);
     const store = SessionStore.open(file);
     const meta = store.create({ cwd: dir, provider: 'anthropic', model: 'm' });
-    store.addTurnUsage(meta.id, [line()], { checkpointId: 'turn-7', prompt: 'split the parser' });
+    store.recordCheckpoint({
+      sessionId: meta.id,
+      checkpointId: 'turn-7',
+      prompt: 'split the parser',
+      startedAt: 12,
+    });
     store.close();
 
     const reopened = SessionStore.open(file);
     expect(reopened.turnCheckpoints(meta.id)).toEqual([
-      { turn: 1, checkpointId: 'turn-7', prompt: 'split the parser' },
+      { checkpointId: 'turn-7', prompt: 'split the parser', startedAt: 12 },
     ]);
     reopened.close();
   });
 
-  it('adds the prompt to a database written before it was kept', () => {
+  it('dates a migrated archive from the turn that billed it', () => {
+    const file = defaultSessionFile(dir);
+    const store = SessionStore.open(file);
+    const meta = store.create({ cwd: dir, provider: 'anthropic', model: 'm' });
+    store.addTurnUsage(meta.id, [line()]);
+    const billedAt = store.turnUsage(meta.id)[0]?.occurredAt;
+    store.close();
+
+    // The old table had no timestamp of its own; it leaned on the billing row
+    // that a failed turn never got, which is why the key moved.
+    writeOldLinks(file, [{ session: meta.id, turn: 1, id: 'turn-9', prompt: 'rename the parser' }]);
+
+    const reopened = SessionStore.open(file);
+    expect(reopened.turnCheckpoints(meta.id)).toEqual([
+      { checkpointId: 'turn-9', prompt: 'rename the parser', startedAt: billedAt },
+    ]);
+    reopened.close();
+  });
+
+  it('rekeys an archive link written before the prompt was kept', () => {
     const file = path.join(dir, 'old.db');
-    const written = new DatabaseSync(file);
-    written.exec(
-      `CREATE TABLE turn_checkpoints (
-         session_id TEXT NOT NULL,
-         turn INTEGER NOT NULL,
-         checkpoint_id TEXT NOT NULL,
-         PRIMARY KEY (session_id, turn)
-       )`,
-    );
-    written.exec(`INSERT INTO turn_checkpoints VALUES ('s-1', 4, 'turn-9')`);
-    written.close();
+    writeOldLinks(file, [{ session: 's-1', turn: 4, id: 'turn-9' }]);
 
     const store = SessionStore.open(file);
-    expect(store.turnCheckpoints('s-1')).toEqual([{ turn: 4, checkpointId: 'turn-9', prompt: '' }]);
-    // An archive link with no prompt is honest about it: a card cannot claim it.
-    store.addTurnUsage('s-1', [line()], { checkpointId: 'turn-10', prompt: 'and now this' });
-    expect(store.turnCheckpoints('s-1')).toHaveLength(2);
+    // An archive with no ask beside it is honest about it: a card cannot claim it.
+    expect(store.turnCheckpoints('s-1')).toEqual([
+      { checkpointId: 'turn-9', prompt: '', startedAt: 0 },
+    ]);
+    store.recordCheckpoint({
+      sessionId: 's-1',
+      checkpointId: 'turn-10',
+      prompt: 'and now this',
+      startedAt: 5,
+    });
+    // A migrated archive has no timestamp of its own, so it keeps the front of
+    // the list, where the oldest turn belongs.
+    expect(store.turnCheckpoints('s-1').map((row) => row.checkpointId)).toEqual([
+      'turn-9',
+      'turn-10',
+    ]);
+    store.close();
+  });
+
+  it('names the ask behind every archive of the workspace it was asked about', () => {
+    const store = SessionStore.inMemory();
+    const here = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    const also = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    const elsewhere = store.create({ cwd: '/other', provider: 'anthropic', model: 'm' });
+    // The undo archive belongs to the folder, not to one conversation in it, so
+    // a number picked from its list has to be answerable across all of them.
+    store.recordCheckpoint({
+      sessionId: here.id,
+      checkpointId: 'a',
+      prompt: 'fix the parser',
+      startedAt: 1,
+    });
+    store.recordCheckpoint({
+      sessionId: also.id,
+      checkpointId: 'b',
+      prompt: 'add a test',
+      startedAt: 2,
+    });
+    store.recordCheckpoint({
+      sessionId: elsewhere.id,
+      checkpointId: 'c',
+      prompt: 'somewhere else',
+      startedAt: 3,
+    });
+
+    expect(store.checkpointAsks('/repo')).toEqual(
+      new Map([
+        ['a', 'fix the parser'],
+        ['b', 'add a test'],
+      ]),
+    );
+    expect(store.checkpointAsks('/other').size).toBe(1);
+    expect(store.checkpointAsks('/nothing-here')).toEqual(new Map());
     store.close();
   });
 
@@ -431,15 +589,26 @@ describe('SessionStore turn checkpoints', () => {
     const store = SessionStore.inMemory();
     const parent = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
     store.saveMessages(parent.id, [{ role: 'user', content: 'before the fork' }]);
-    store.addTurnUsage(parent.id, [line()], { checkpointId: 'turn-1', prompt: 'before the fork' });
+    store.recordCheckpoint({
+      sessionId: parent.id,
+      checkpointId: 'turn-1',
+      prompt: 'before the fork',
+      startedAt: 1,
+    });
     const child = store.fork(parent.id);
 
-    // The fork never ran those turns; its own first run has to be turn 1.
+    // The fork never ran those turns, so it cannot give them back.
     expect(store.turnCheckpoints(child.id)).toEqual([]);
-    store.addTurnUsage(child.id, [line()], { checkpointId: 'child-1', prompt: 'the branch' });
+    store.recordCheckpoint({
+      sessionId: child.id,
+      checkpointId: 'child-1',
+      prompt: 'the branch',
+      startedAt: 2,
+    });
     expect(store.turnCheckpoints(child.id)).toEqual([
-      { turn: 1, checkpointId: 'child-1', prompt: 'the branch' },
+      { checkpointId: 'child-1', prompt: 'the branch', startedAt: 2 },
     ]);
+    expect(store.turnCheckpoints(parent.id)).toHaveLength(1);
     store.close();
   });
 });
