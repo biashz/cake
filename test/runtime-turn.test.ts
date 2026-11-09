@@ -1,17 +1,20 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { simulateReadableStream } from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { CheckpointStore } from '../src/core/checkpoints.js';
 import type { AgentEvent, TokenUsage } from '../src/core/events.js';
 import { imageDataUrl, MAX_IMAGES_PER_TURN } from '../src/core/images.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import type { ModelProvider } from '../src/providers/types.js';
 import { runTurn, type TurnNote } from '../src/runtime/turn.js';
+import { editTool } from '../src/tools/edit.js';
 import { taskTool } from '../src/tools/task.js';
 import type { CakeTool, ToolContext } from '../src/tools/types.js';
+import { writeTool } from '../src/tools/write.js';
 
 const MODEL = { provider: 'anthropic', modelId: 'claude-sonnet-4-5' } as const;
 
@@ -128,6 +131,152 @@ function context(): {
   };
   return { ctx, forwarded };
 }
+
+describe('runTurn checkpoints', () => {
+  function turnFor(model: MockLanguageModelV4, overrides: Record<string, unknown> = {}) {
+    const { ctx } = context();
+    return runTurn({
+      cwd,
+      registry: registryFor(model),
+      model: MODEL,
+      system: 'sys',
+      mode: 'yolo',
+      rules: { allow: [], deny: [] },
+      tools: [writeTool],
+      history: [],
+      prompt: 'change it',
+      maxContext: 200_000,
+      ctx,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+      ...overrides,
+    });
+  }
+
+  it('archives the file a turn changed, so the turn can be undone', async () => {
+    await writeFile(path.join(cwd, 'a.ts'), 'original\n', 'utf8');
+    const checkpoints = CheckpointStore.forWorkspace(cwd);
+    const model = new MockLanguageModelV4({
+      doStream: [
+        toolCallStream('write', { path: 'a.ts', content: 'rewritten\n' }),
+        textStream('done'),
+      ],
+    });
+
+    await turnFor(model, { checkpoints });
+    expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('rewritten\n');
+
+    const turns = await checkpoints.list();
+    const first = turns[0];
+    if (!first) throw new Error('the turn left no checkpoint');
+    expect(turns).toHaveLength(1);
+    expect(first.entries.map((entry) => entry.path)).toEqual(['a.ts']);
+
+    const report = await checkpoints.rewind(first.id);
+    if (!report?.applied) throw new Error('rewind did not apply');
+    expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('original\n');
+  });
+
+  it('archives the paths a mixed write-and-edit turn touched', async () => {
+    await writeFile(path.join(cwd, 'a.ts'), 'original\n', 'utf8');
+    await writeFile(path.join(cwd, 'b.ts'), 'one\n', 'utf8');
+    const checkpoints = CheckpointStore.forWorkspace(cwd);
+    const model = new MockLanguageModelV4({
+      doStream: [
+        toolCallStream('write', { path: 'c.ts', content: 'new file\n' }),
+        toolCallStream('edit', { path: 'b.ts', old_string: 'one', new_string: 'two' }),
+        textStream('done'),
+      ],
+    });
+
+    await turnFor(model, { checkpoints, tools: [writeTool, editTool] });
+    const turns = await checkpoints.list();
+    const first = turns[0];
+    if (!first) throw new Error('the turn left no checkpoint');
+    expect(first.entries.map((entry) => entry.path)).toEqual(['c.ts', 'b.ts']);
+
+    await checkpoints.rewind(first.id);
+    // Each kind of change goes back the way it came: an edit to its old text,
+    // a creation to no file at all.
+    expect(await readFile(path.join(cwd, 'b.ts'), 'utf8')).toBe('one\n');
+    await expect(readFile(path.join(cwd, 'c.ts'), 'utf8')).rejects.toThrow('ENOENT');
+  });
+
+  it('keeps one archive per turn, whatever the model did to the same file', async () => {
+    await writeFile(path.join(cwd, 'a.ts'), 'first\n', 'utf8');
+    const checkpoints = CheckpointStore.forWorkspace(cwd);
+    const model = new MockLanguageModelV4({
+      doStream: [
+        toolCallStream('write', { path: 'a.ts', content: 'second\n' }),
+        toolCallStream('write', { path: 'a.ts', content: 'third\n' }),
+        textStream('done'),
+      ],
+    });
+
+    await turnFor(model, { checkpoints });
+    const turns = await checkpoints.list();
+    const first = turns[0];
+    if (!first) throw new Error('the turn left no checkpoint');
+    expect(turns).toHaveLength(1);
+    expect(first.entries).toHaveLength(1);
+
+    await checkpoints.rewind(first.id);
+    // The turn found the file as it was before the first edit, not the middle one.
+    expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('first\n');
+  });
+
+  it('leaves a refused write out of the archive', async () => {
+    await writeFile(path.join(cwd, 'a.ts'), 'original\n', 'utf8');
+    const checkpoints = CheckpointStore.forWorkspace(cwd);
+    const model = new MockLanguageModelV4({
+      doStream: [toolCallStream('write', { path: 'a.ts', content: 'no\n' }), textStream('refused')],
+    });
+    const { ctx } = context();
+    const denied: ToolContext = { ...ctx, askPermission: async () => 'deny' };
+
+    await turnFor(model, { checkpoints, ctx: denied, mode: 'default' });
+    expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('original\n');
+    expect(await checkpoints.list()).toEqual([]);
+  });
+
+  it('closes the archive when the turn dies part-way through', async () => {
+    await writeFile(path.join(cwd, 'a.ts'), 'original\n', 'utf8');
+    const checkpoints = CheckpointStore.forWorkspace(cwd);
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 1) return toolCallStream('write', { path: 'a.ts', content: 'half done\n' });
+        throw new Error('provider died mid-turn');
+      },
+    });
+
+    await expect(turnFor(model, { checkpoints })).rejects.toThrow('provider died mid-turn');
+    // The write happened, so the undo has to have been recorded: this is the
+    // turn nobody wants to keep.
+    const turns = await checkpoints.list();
+    const first = turns[0];
+    if (!first) throw new Error('a failed turn left no checkpoint');
+    expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('half done\n');
+
+    await checkpoints.rewind(first.id);
+    expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('original\n');
+  });
+
+  it('records nothing when the run was not told to archive', async () => {
+    await writeFile(path.join(cwd, 'a.ts'), 'original\n', 'utf8');
+    const checkpoints = CheckpointStore.forWorkspace(cwd);
+    const model = new MockLanguageModelV4({
+      doStream: [
+        toolCallStream('write', { path: 'a.ts', content: 'rewritten\n' }),
+        textStream('done'),
+      ],
+    });
+
+    await turnFor(model);
+    expect(await checkpoints.list()).toEqual([]);
+  });
+});
 
 describe('runTurn', () => {
   it('merges nested tool usage into the turn totals and forwards it', async () => {

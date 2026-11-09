@@ -2,7 +2,9 @@ import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { render } from 'ink';
 import { App } from './cli/App.js';
+import { revertTurn } from './cli/revert.js';
 import { loadConfig } from './config/config.js';
+import { CheckpointStore } from './core/checkpoints.js';
 import { buildSystemPrompt, loadProjectInstructions } from './core/context.js';
 import { formatCost, spendLabel, unpricedTokens } from './core/cost.js';
 import type { AgentEvent } from './core/events.js';
@@ -36,6 +38,7 @@ async function main(): Promise<void> {
       'permission-mode': { type: 'string' },
       resume: { type: 'string' },
       continue: { type: 'boolean', short: 'c', default: false },
+      revert: { type: 'string' },
       doctor: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', short: 'v', default: false },
@@ -60,6 +63,15 @@ async function main(): Promise<void> {
   }
   const config = loadConfig();
   const registry = createDefaultRegistry(config);
+
+  // One undo archive per workspace, shared by the run and by --revert. Creating
+  // it touches nothing: the folder appears with the first captured file.
+  const checkpoints = CheckpointStore.forWorkspace(cwd);
+
+  if (values.revert !== undefined) {
+    process.stdout.write(`${await revertTurn(checkpoints, values.revert)}\n`);
+    return;
+  }
 
   const store = SessionStore.open(defaultSessionFile(cwd));
   const resumed = resolveResume(store, values.resume, values.continue);
@@ -129,6 +141,7 @@ async function main(): Promise<void> {
         rules: settings.permissions,
         maxContext,
         pricing: config.pricing,
+        checkpoints,
         embedder,
         mcpTools: mcp.tools,
       });
@@ -155,6 +168,7 @@ async function main(): Promise<void> {
       initialMessages={history}
       maxContext={maxContext}
       pricing={config.pricing}
+      checkpoints={checkpoints}
       embedder={embedder}
       mcpTools={mcp.tools}
     />,
@@ -200,6 +214,7 @@ interface HeadlessOptions {
   rules: PermissionRules;
   maxContext: number;
   pricing: PricingOverrides;
+  checkpoints: CheckpointStore;
   embedder?: Embedder;
   mcpTools?: CakeTool[];
 }
@@ -217,6 +232,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
     rules,
     maxContext,
     pricing,
+    checkpoints,
     embedder,
     mcpTools = [],
   } = options;
@@ -287,6 +303,7 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
       prompt,
       maxContext,
       pricing,
+      checkpoints,
       embedder,
       ctx,
       abortSignal: controller.signal,
@@ -342,6 +359,7 @@ function printHelp(): void {
       '  -m, --model <id>          Model id (overrides config/default)',
       '  -c, --continue            Resume the most recent session in this workspace',
       '      --resume <id>         Resume a session by id',
+      '      --revert [n]          Undo the file changes of recorded turn n, then exit',
       '      --doctor              Diagnose Node, providers, config, settings, MCP, sessions, index',
       '  -h, --help                Show this help',
       '  -v, --version             Print version',
@@ -349,12 +367,13 @@ function printHelp(): void {
       'Input:',
       '  @path/to/file             Attach a file to the prompt',
       '  @codebase                 Retrieve relevant code chunks (semantic search)',
-      '  /help  /clear  /fork  /export  /model <id>  /cost  /exit    Interactive commands',
+      '  /help  /clear  /fork  /export  /revert [n]  /model  /cost  /exit    Interactive commands',
       '',
       'Project context:',
       '  AGENTS.md files from the workspace root upward are loaded into the system prompt.',
       '  Sessions persist in .cake/sessions/cake.db (node:sqlite).',
       '  /export writes the transcript to .cake/exports/<workspace>-<id>.md unless given a path.',
+      '  Files a turn changes are archived in .cake/checkpoints (last 50 turns) for /revert.',
       '',
       'MCP:',
       '  ~/.cake/mcp.json and .cake/mcp.json define "mcpServers" (stdio or http).',

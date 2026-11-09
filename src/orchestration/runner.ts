@@ -64,6 +64,9 @@ export async function runSubAgent(
       ? { onPlan: (tasks: TaskItem[]) => options.onEvent?.({ type: 'plan', tasks }) }
       : {}),
     ...(parentCtx.onUsage ? { onUsage: parentCtx.onUsage } : {}),
+    // The child's edits are the parent's turn: rewinding that turn has to undo
+    // what a subagent wrote, or the undo is half a story.
+    ...(parentCtx.checkpoints ? { checkpoints: parentCtx.checkpoints } : {}),
   };
 
   options.onEvent?.({

@@ -20,6 +20,7 @@ export const writeTool: CakeTool<Args, string> = {
   inputSchema: schema,
   summarize: (args) => `${args.path} (${args.content.length} chars)`,
   matchTarget: (args) => args.path,
+  fileTarget: (args) => args.path,
   async preview(args, cwd) {
     const abs = resolveInside(cwd, args.path);
     const before = await readFile(abs, 'utf8').catch(() => '');

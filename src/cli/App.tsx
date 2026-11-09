@@ -1,6 +1,7 @@
 import type { ModelMessage } from 'ai';
 import { Box, Text, useApp, useInput } from 'ink';
 import { useEffect, useRef, useState } from 'react';
+import type { CheckpointStore } from '../core/checkpoints.js';
 import { formatCost, spendLabel, unpricedTokens } from '../core/cost.js';
 import { buildCostBoard } from '../core/cost-board.js';
 import type { AgentEvent } from '../core/events.js';
@@ -24,6 +25,7 @@ import type {
   TaskStatus,
   ToolContext,
 } from '../tools/types.js';
+import { revertTurn } from './revert.js';
 
 type EntryRole = 'user' | 'assistant' | 'tool' | 'error' | 'info';
 
@@ -53,6 +55,8 @@ export interface AppProps {
   maxContext: number;
   /** Rate-card additions from config; costs use them for every model. */
   pricing: PricingOverrides;
+  /** Where each turn's file changes are archived, so /revert can undo them. */
+  checkpoints: CheckpointStore;
   embedder?: Embedder;
   mcpTools?: CakeTool[];
 }
@@ -62,6 +66,7 @@ const COMMANDS = [
   '/clear           start a new session',
   '/fork            branch this conversation into a new session',
   '/export [file]   write the transcript as Markdown',
+  '/revert [n]      undo the file changes of turn n (newest if omitted); "list" shows them',
   '/model <id>      switch model id (same provider)',
   '/cost            session token and cost totals',
   '/exit            quit (or Ctrl+C)',
@@ -80,7 +85,17 @@ function preview(value: unknown, max = 160): string {
 }
 
 export function App(props: AppProps) {
-  const { registry, permissionMode, rules, system, store, maxContext, pricing, embedder } = props;
+  const {
+    registry,
+    permissionMode,
+    rules,
+    system,
+    store,
+    maxContext,
+    pricing,
+    checkpoints,
+    embedder,
+  } = props;
   const mcpTools = props.mcpTools ?? [];
   const { exit } = useApp();
   const [model, setModel] = useState<ModelSpec>(props.model);
@@ -153,6 +168,13 @@ export function App(props: AppProps) {
         } catch (err) {
           addEntry({ role: 'error', text: `[export] ${(err as Error).message}` });
         }
+        return;
+      }
+      case 'revert': {
+        revertTurn(checkpoints, arg).then(
+          (text) => addEntry({ role: 'info', text }),
+          (err: unknown) => addEntry({ role: 'error', text: `[revert] ${(err as Error).message}` }),
+        );
         return;
       }
       case 'model': {
@@ -316,6 +338,7 @@ export function App(props: AppProps) {
         prompt: typed,
         maxContext,
         pricing,
+        checkpoints,
         embedder,
         ctx,
         abortSignal: controller.signal,

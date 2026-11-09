@@ -1,5 +1,6 @@
 import type { ModelMessage } from 'ai';
 import { runAgent } from '../core/agent.js';
+import type { CheckpointStore } from '../core/checkpoints.js';
 import { createHistorySummarizer, maybeCompress } from '../core/context.js';
 import { addUsage, type CostLine, costLine } from '../core/cost.js';
 import type { AgentEvent, TokenUsage } from '../core/events.js';
@@ -36,6 +37,11 @@ export interface TurnOptions {
   /** Data URLs attached to this prompt, ahead of any `@file` images. */
   images?: string[];
   maxContext: number;
+  /**
+   * Where the turn's file changes are archived before they happen, so the turn
+   * can be undone. Absent means no undo for this turn; nothing else changes.
+   */
+  checkpoints?: CheckpointStore;
   /** Rate-card additions from config, used when costing this turn. */
   pricing?: PricingOverrides;
   embedder?: Embedder;
@@ -142,8 +148,12 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
    * model and which child agent a turn paid for, so it is kept per line.
    */
   const lines: CostLine[] = [];
+  // One undo archive per turn: what a tool changes is copied before it changes
+  // it, and the manifest closes when the turn does, however it ends.
+  const undo = options.checkpoints?.beginTurn();
   const ctx: ToolContext = {
     ...options.ctx,
+    ...(undo ? { checkpoints: undo } : {}),
     onPlan: (tasks) => options.onEvent({ type: 'plan', tasks }),
     onUsage: (usage, costUsd, source) => {
       const total = addUsage(nestedUsage, usage);
@@ -162,18 +172,25 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
     },
   };
 
-  const result = await runAgent(
-    {
-      model,
-      system: options.system,
-      tools: buildToolSet(options.tools, ctx, options.mode, options.rules),
-      messages,
-      abortSignal,
-      ...(options.pricing ? { pricing: options.pricing } : {}),
-      onEvent: options.onEvent,
-    },
-    registry,
-  );
+  let result: Awaited<ReturnType<typeof runAgent>>;
+  try {
+    result = await runAgent(
+      {
+        model,
+        system: options.system,
+        tools: buildToolSet(options.tools, ctx, options.mode, options.rules),
+        messages,
+        abortSignal,
+        ...(options.pricing ? { pricing: options.pricing } : {}),
+        onEvent: options.onEvent,
+      },
+      registry,
+    );
+  } finally {
+    // Cancelled or failed is exactly when an undo is wanted, so the manifest
+    // closes on every path out of the turn.
+    await undo?.finish();
+  }
 
   lines.unshift(
     costLine(model, result.usage, result.costUsd, { scope: 'main', pricing: options.pricing }),

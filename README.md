@@ -80,13 +80,14 @@ cake --doctor
 | `-c, --continue`               | 续跑当前工作区最近的会话                    |
 | `--resume <id>`                | 续跑指定会话                                |
 | `--doctor`                     | 环境与配置诊断                              |
+| `--revert [n]`                 | 撤销第 n 轮改过的文件并退出                 |
 | `-v, --version` / `-h, --help` | 版本 / 帮助                                 |
 
 交互模式下的输入：
 
 - `@path/to/file` 把文件内容附进本条消息
 - `@codebase` 先做一次语义检索，把相关代码块附进消息
-- `/help` `/clear` `/fork` `/export [file]` `/model <id>` `/cost` `/exit`
+- `/help` `/clear` `/fork` `/export [file]` `/revert [n]` `/model <id>` `/cost` `/exit`
 
 ## 权限模型
 
@@ -200,6 +201,7 @@ cake "@codebase 这个仓库在哪里处理 token 刷新？"
 - `/export [file]` 把整段对话写成 Markdown，默认落在 `.cake/exports/<workspace>-<id>.md`（桌面版可以把相对路径指到 workspace 里面任意位置，越界的直接拒绝）。导出的是模型真正看到的展开文本（`@file` 的内容也在里面），工具结果拆掉信封只留负载，负载里自带的 ``` 用加长围栏保住原文
 - 会话里发过的图片跟着导出一起落盘：写在 Markdown 同目录的 `assets/` 下，文件名由图片字节算出（sha256 前 12 位 + 原格式后缀），所以同一张图被两轮用到也只写一份，Markdown 里两条链接指向同一个文件；`/export` 的输出和桌面端的导出提示都会点名这个文件夹
 - `CAKE_TRACE=1 cake "..."` 会把工具调用/结果/错误写进 `.cake/logs/run-*.jsonl`（本地文件，默认关闭，不上传任何数据）
+- 一轮改过的文件在动手之前存进 `.cake/checkpoints`：按字节的 sha256 命名存原始内容（不是 utf8 重读，所以二进制图也还原得分毫不差），每轮一份清单。`/revert [n]`（或 `cake --revert [n]`）把第 n 轮还原回去——被取消、中途报错的轮也在档，而且正是这些轮最需要撤销。三样东西不进档：`.cake/` 自己（撤销一轮不该把 cake 关于这一轮的记忆也撤掉）、workspace 外的路径、单文件超过 8 MiB 的（还原时写 `left (no copy was kept: too large)`，绝不假装成功）。别的轮改过同一批文件时默认拒绝还原，要你显式 `--force`；只留最近 50 轮，清掉没人引用的字节。`bash` 和 MCP 工具改的东西不在档里，每次输出都这么写明
 
 ## 桌面端界面
 

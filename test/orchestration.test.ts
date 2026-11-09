@@ -5,6 +5,7 @@ import { simulateReadableStream } from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runAgent } from '../src/core/agent.js';
+import type { TurnRecorder } from '../src/core/checkpoints.js';
 import type { AgentEvent, TokenUsage } from '../src/core/events.js';
 import { createAgentTool } from '../src/orchestration/tool.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
@@ -190,6 +191,31 @@ describe('subagents', () => {
     expect(
       events.some((event) => event.type === 'tool-call' && event.toolName === 'general:write'),
     ).toBe(true);
+  });
+
+  it('archives a child agent’s write in the parent turn', async () => {
+    const captured: string[] = [];
+    const recorder: TurnRecorder = {
+      capture: async (target) => {
+        captured.push(target);
+      },
+      finish: async () => undefined,
+    };
+    const model = new MockLanguageModelV4({
+      doStream: [
+        toolCallStream('write', { path: 'out.txt', content: 'written\n' }, 'write-1'),
+        textStream('Wrote out.txt.', 12, 2),
+      ],
+    });
+    const tool = createAgentTool(agentOptions(model));
+    const ctx = context();
+    ctx.checkpoints = recorder;
+
+    await tool.execute({ type: 'general', prompt: 'create out.txt' }, ctx);
+
+    // The child's change is the parent's turn: rewinding it has to undo this too.
+    expect(captured).toEqual(['out.txt']);
+    expect(await readFile(path.join(cwd, 'out.txt'), 'utf8')).toBe('written\n');
   });
 
   it('never gives children the agent tool', async () => {

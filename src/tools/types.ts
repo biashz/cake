@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { TurnRecorder } from '../core/checkpoints.js';
 import type { DiffResult } from '../core/diff.js';
 import type { TokenUsage } from '../core/events.js';
 import type { ModelSpec } from '../providers/types.js';
@@ -61,6 +62,12 @@ export interface ToolContext {
   onPlan?: (tasks: TaskItem[]) => void;
   /** Report usage from nested work (subagents) so callers can bill the whole run. */
   onUsage?: (usage: TokenUsage, costUsd: number, source?: NestedUsage) => void;
+  /**
+   * This turn's undo recorder, from the run that owns the turn. A write tool
+   * whose `fileTarget` is named here can be reverted; a child agent shares its
+   * parent's recorder, because the parent's turn is what the user rewinds.
+   */
+  checkpoints?: TurnRecorder;
 }
 
 export interface CakeTool<Args = unknown, Result = unknown> {
@@ -74,6 +81,13 @@ export interface CakeTool<Args = unknown, Result = unknown> {
   summarize(args: Args): string;
   /** Value matched by allow/deny rules and danger patterns: a path or command. */
   matchTarget(args: Args): string;
+  /**
+   * The one file this call changes, when it changes exactly one — what a
+   * checkpoint is taken of before the call runs. Nothing for tools whose effect
+   * on the filesystem cannot be named in advance, which is why a shell command
+   * or an MCP tool can still escape the undo.
+   */
+  fileTarget?(args: Args): string | undefined;
   /**
    * Describe the change this call would make, asked only when the user has to
    * approve it. Return nothing when the tool cannot say.

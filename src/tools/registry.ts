@@ -44,6 +44,10 @@ export function buildToolSet(
       execute: async (args: unknown, call: { toolCallId: string }) => {
         const perCall: ToolContext = { ...ctx, callId: call.toolCallId };
         await authorize(item, args, perCall, mode, rules);
+        // After approval and before the change: a denied call has nothing to
+        // undo, and an approved one must not find out afterwards.
+        const target = item.fileTarget?.(args);
+        if (target !== undefined) await perCall.checkpoints?.capture(target);
         return item.execute(args, perCall);
       },
     });

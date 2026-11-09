@@ -53,6 +53,7 @@ export const editTool: CakeTool<Args, string> = {
   inputSchema: schema,
   summarize: (args) => args.path,
   matchTarget: (args) => args.path,
+  fileTarget: (args) => args.path,
   async preview(args, cwd) {
     const abs = resolveInside(cwd, args.path);
     const rel = toPosix(path.relative(cwd, abs));
