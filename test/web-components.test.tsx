@@ -1090,6 +1090,15 @@ describe('Transcript', () => {
     expect(note.querySelector('.entry-note-kind')?.textContent).toBe('export');
     expect(note.textContent).toContain('repo-a1b2c3d4.md');
   });
+
+  it('names the empty transcript instead of repeating the placeholder at you', () => {
+    render(<Transcript entries={[]} streaming="" onInsertFile={vi.fn()} />);
+
+    expect(screen.getByTestId('transcript-empty').textContent).toBe('No turns yet.');
+    // The invitation stays, but now it answers a named state rather than standing in
+    // for the input box's own text in a place you cannot type.
+    expect(screen.getByText('Ask cake to change the code…')).toBeTruthy();
+  });
 });
 
 describe('RulesSection', () => {
@@ -1989,14 +1998,14 @@ describe('Files panel', () => {
     } as unknown as typeof window.cake;
     renderInspector('files');
     await settle();
-    expect(screen.getByText('src/a.ts')).toBeTruthy();
+    expect(screen.getByText('a.ts')).toBeTruthy();
 
     broken = true;
     fireEvent.change(screen.getByLabelText('Filter workspace files'), { target: { value: 'b' } });
     await settle();
 
     // Those rows answer the filter you already changed, not this one.
-    expect(screen.queryByText('src/a.ts')).toBeNull();
+    expect(screen.queryByText('a.ts')).toBeNull();
     expect(screen.getByTestId('files-error')).toBeTruthy();
   });
 
@@ -2027,5 +2036,24 @@ describe('Files panel', () => {
     // with them rather than hovering over an empty list.
     expect(screen.queryByText('Click a file to add `@path` to the prompt.')).toBeNull();
     expect(screen.getByText('No files match that filter.')).toBeTruthy();
+  });
+
+  it('gives way in the directory, never in the name', async () => {
+    window.cake = {
+      listFiles: async () => ['src/components/deeply/nested/Inspector.tsx', 'notes.md'],
+    } as unknown as typeof window.cake;
+    renderInspector('files');
+    await settle();
+
+    const name = screen.getByText('Inspector.tsx');
+    expect(name.className).toBe('file-name');
+    expect(screen.getByText('src/components/deeply/nested/').className).toBe('file-dir');
+    // A file at the folder's own root has no directory to show at all.
+    expect(document.querySelectorAll('.file-row')).toHaveLength(2);
+    expect(document.querySelectorAll('.file-dir')).toHaveLength(1);
+    // The whole path is still the thing the row hands back and the title names.
+    expect(name.closest('.file-row')?.getAttribute('title')).toBe(
+      'Add @src/components/deeply/nested/Inspector.tsx',
+    );
   });
 });

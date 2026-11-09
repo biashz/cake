@@ -381,6 +381,12 @@ export function Transcript({
             <span className="transcript-empty-mark" aria-hidden="true">
               <Icon name="spark" size={20} />
             </span>
+            {/* The same grammar every other empty panel uses: name the state, then say
+                what fills it. Without the first line this is only the placeholder
+                again, in a place no one can type into. */}
+            <p className="transcript-empty-title" data-testid="transcript-empty">
+              No turns yet.
+            </p>
             <p className="hint">Ask cake to change the code…</p>
           </div>
         ) : null}

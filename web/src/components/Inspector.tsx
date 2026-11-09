@@ -39,6 +39,15 @@ const TABS: Array<{ id: InspectorTab; label: string }> = [
   { id: 'files', label: 'Files' },
 ];
 
+/**
+ * The name is why you read a file list, so it is the part that has to survive a
+ * narrow panel: the directory is what gets ellipsised, never the extension.
+ */
+function splitPath(file: string): [string, string] {
+  const at = file.lastIndexOf('/');
+  return at < 0 ? ['', file] : [file.slice(0, at + 1), file.slice(at + 1)];
+}
+
 /** Same marks the kernel and the CLI use, so a plan reads alike everywhere. */
 const PLAN_MARKS: Record<TaskStatus, string> = {
   pending: '[ ]',
@@ -1587,19 +1596,25 @@ export function Inspector({
               ) : files.length === 0 ? (
                 <p className="inspect-hint">No files match that filter.</p>
               ) : (
-                files.map((file) => (
-                  <button
-                    key={file}
-                    type="button"
-                    className="file-row"
-                    onClick={() => onInsertFile(file)}
-                    title={`Add @${file}`}
-                  >
-                    <Icon name="file" size={13} />
-                    <span className="mono">{file}</span>
-                    <span className="file-action mono">@</span>
-                  </button>
-                ))
+                files.map((file) => {
+                  const [dir, name] = splitPath(file);
+                  return (
+                    <button
+                      key={file}
+                      type="button"
+                      className="file-row"
+                      onClick={() => onInsertFile(file)}
+                      title={`Add @${file}`}
+                    >
+                      <Icon name="file" size={13} />
+                      <span className="mono file-path">
+                        {dir ? <span className="file-dir">{dir}</span> : null}
+                        <span className="file-name">{name}</span>
+                      </span>
+                      <span className="file-action mono">@</span>
+                    </button>
+                  );
+                })
               )}
             </div>
           </div>
