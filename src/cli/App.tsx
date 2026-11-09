@@ -358,7 +358,11 @@ export function App(props: AppProps) {
       historyRef.current = result.messages;
       store.setTitleIfEmpty(session.id, typed);
       store.saveMessages(session.id, result.messages);
-      store.addTurnUsage(session.id, result.lines);
+      store.addTurnUsage(
+        session.id,
+        result.lines,
+        result.checkpointId ? { checkpointId: result.checkpointId, prompt: typed } : undefined,
+      );
       const updated = store.get(session.id);
       if (updated) setSession(updated);
       const meta = `${result.usage.totalTokens} tokens · ${spendLabel(

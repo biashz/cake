@@ -351,11 +351,95 @@ describe('SessionStore turn detail', () => {
   it('drops turn detail with the session', () => {
     const store = SessionStore.inMemory();
     const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
-    store.addTurnUsage(meta.id, [line({ costUsd: 0.01, usage: usage(100) })]);
+    store.addTurnUsage(meta.id, [line({ costUsd: 0.01, usage: usage(100) })], {
+      checkpointId: 'turn-1',
+      prompt: 'do the thing',
+    });
 
     store.delete(meta.id);
     expect(store.turnUsage(meta.id)).toEqual([]);
+    expect(store.turnCheckpoints(meta.id)).toEqual([]);
     expect(store.workspaceUsage('/repo').totalTokens).toBe(0);
+    store.close();
+  });
+});
+
+describe('SessionStore turn checkpoints', () => {
+  it('keeps the prompt that opened the turn beside the archive it closed', () => {
+    const store = SessionStore.inMemory();
+    const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+
+    store.addTurnUsage(meta.id, [line()], { checkpointId: 'first', prompt: 'rename the file' });
+    // A billed turn that changed no file leaves no archive, so it has nothing to name.
+    store.addTurnUsage(meta.id, [line(), line({ scope: 'subagent', agentType: 'Explore' })]);
+    store.addTurnUsage(meta.id, [line()], { checkpointId: 'third', prompt: 'fix it again' });
+
+    expect(store.turnCheckpoints(meta.id)).toEqual([
+      { turn: 1, checkpointId: 'first', prompt: 'rename the file' },
+      { turn: 3, checkpointId: 'third', prompt: 'fix it again' },
+    ]);
+    expect(store.turnUsage(meta.id).map((row) => row.turn)).toEqual([1, 2, 2, 3]);
+    store.close();
+  });
+
+  it('records nothing for a turn that has no archive', () => {
+    const store = SessionStore.inMemory();
+    const meta = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    store.addTurnUsage(meta.id, [line()]);
+
+    expect(store.turnCheckpoints(meta.id)).toEqual([]);
+    store.close();
+  });
+
+  it('reads the mapping back after reopen', () => {
+    const file = defaultSessionFile(dir);
+    const store = SessionStore.open(file);
+    const meta = store.create({ cwd: dir, provider: 'anthropic', model: 'm' });
+    store.addTurnUsage(meta.id, [line()], { checkpointId: 'turn-7', prompt: 'split the parser' });
+    store.close();
+
+    const reopened = SessionStore.open(file);
+    expect(reopened.turnCheckpoints(meta.id)).toEqual([
+      { turn: 1, checkpointId: 'turn-7', prompt: 'split the parser' },
+    ]);
+    reopened.close();
+  });
+
+  it('adds the prompt to a database written before it was kept', () => {
+    const file = path.join(dir, 'old.db');
+    const written = new DatabaseSync(file);
+    written.exec(
+      `CREATE TABLE turn_checkpoints (
+         session_id TEXT NOT NULL,
+         turn INTEGER NOT NULL,
+         checkpoint_id TEXT NOT NULL,
+         PRIMARY KEY (session_id, turn)
+       )`,
+    );
+    written.exec(`INSERT INTO turn_checkpoints VALUES ('s-1', 4, 'turn-9')`);
+    written.close();
+
+    const store = SessionStore.open(file);
+    expect(store.turnCheckpoints('s-1')).toEqual([{ turn: 4, checkpointId: 'turn-9', prompt: '' }]);
+    // An archive link with no prompt is honest about it: a card cannot claim it.
+    store.addTurnUsage('s-1', [line()], { checkpointId: 'turn-10', prompt: 'and now this' });
+    expect(store.turnCheckpoints('s-1')).toHaveLength(2);
+    store.close();
+  });
+
+  it('leaves the parent’s turns out of a fork', () => {
+    const store = SessionStore.inMemory();
+    const parent = store.create({ cwd: '/repo', provider: 'anthropic', model: 'm' });
+    store.saveMessages(parent.id, [{ role: 'user', content: 'before the fork' }]);
+    store.addTurnUsage(parent.id, [line()], { checkpointId: 'turn-1', prompt: 'before the fork' });
+    const child = store.fork(parent.id);
+
+    // The fork never ran those turns; its own first run has to be turn 1.
+    expect(store.turnCheckpoints(child.id)).toEqual([]);
+    store.addTurnUsage(child.id, [line()], { checkpointId: 'child-1', prompt: 'the branch' });
+    expect(store.turnCheckpoints(child.id)).toEqual([
+      { turn: 1, checkpointId: 'child-1', prompt: 'the branch' },
+    ]);
     store.close();
   });
 });

@@ -1,3 +1,4 @@
+import type { CheckpointTurnRow } from '../../src/desktop/api.js';
 import type { CodebaseHit } from '../../src/rag/retrieval.js';
 import { imagesOfContent } from './attachments';
 
@@ -357,4 +358,80 @@ export function endAgent(
       ? { ...entry, tool: { ...entry.tool, agent: { ...agent, ...result, status: 'done' } } }
       : entry;
   });
+}
+
+/** Every file a turn's calls named, child agents included: what an undo could move. */
+function touchedPaths(turn: Turn): Set<string> {
+  const paths = new Set<string>();
+  const walk = (tools: ToolInfo[]): void => {
+    for (const tool of tools) {
+      const input = tool.input;
+      if (input !== null && typeof input === 'object') {
+        const path = (input as Record<string, unknown>).path;
+        if (typeof path === 'string' && path.trim() !== '') paths.add(path);
+      }
+      if (tool.agent) walk(tool.agent.children);
+    }
+  };
+  walk(turn.body.map((entry) => entry.tool).filter((tool): tool is ToolInfo => tool !== undefined));
+  return paths;
+}
+
+/**
+ * The prompt as it was typed, which is what a card shows, against the message
+ * that was stored: an `@file` mention keeps the words ahead of the blocks it
+ * pulled in, so a stored prompt is the typed one or the typed one and an annex.
+ */
+function sameAsk(row: string, card: string): boolean {
+  return row === card || card.startsWith(`${row}\n\n`);
+}
+
+/**
+ * Which card each undo archive belongs to.
+ *
+ * Turn numbers cannot answer that: a compressed or a failed turn changes what
+ * the nth turn is on one side of the wire and not the other, and a wrong answer
+ * silently reverts the wrong files. The prompt a card prints is the one part of
+ * a turn both sides keep, so a card answers to an archive only when that
+ * archive asked its own words — and when two cards ask the same words, only the
+ * one whose own calls named a file the archive can put back. Anything still
+ * tied is left unlinked, which shows as no undo rather than as the wrong undo.
+ */
+export function linkUndos(
+  turns: Turn[],
+  rows: CheckpointTurnRow[],
+): Map<number, CheckpointTurnRow> {
+  const claims: { turn: Turn; rows: CheckpointTurnRow[] }[] = [];
+  for (const turn of turns) {
+    const asked = turn.user?.text;
+    if (asked === undefined || asked.trim() === '') continue;
+    const matching = rows.filter((row) => sameAsk(row.prompt, asked));
+    if (matching.length > 0) claims.push({ turn, rows: matching });
+  }
+
+  const shares = new Map<Turn, Set<string>>();
+  const touches = (turn: Turn, row: CheckpointTurnRow): boolean => {
+    const paths = shares.get(turn) ?? touchedPaths(turn);
+    shares.set(turn, paths);
+    return row.files.some((path) => paths.has(path));
+  };
+
+  for (const row of rows) {
+    const suitors = claims.filter((claim) => claim.rows.includes(row));
+    if (suitors.length < 2) continue;
+    for (const suitor of suitors) {
+      if (touches(suitor.turn, row)) continue;
+      suitor.rows = suitor.rows.filter((item) => item !== row);
+    }
+  }
+
+  const links = new Map<number, CheckpointTurnRow>();
+  for (const claim of claims) {
+    const row = claim.rows.length === 1 ? claim.rows[0] : undefined;
+    if (!row) continue;
+    // Still answered by another card that can prove it too: neither is told.
+    if (claims.filter((other) => other.rows[0] === row).length > 1) continue;
+    links.set(claim.turn.key, row);
+  }
+  return links;
 }

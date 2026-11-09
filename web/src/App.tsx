@@ -199,6 +199,7 @@ export function App() {
     runModel,
     plan,
     usage: lastUsage,
+    checkpoints,
   } = buffer;
   const runningList = useMemo(() => runningIds(buffers), [buffers]);
   /** Sessions whose approval card is unanswered, including the ones off screen. */
@@ -447,6 +448,26 @@ export function App() {
   }, []);
 
   /**
+   * Which of a session's turns can be given back. A turn only names its archive
+   * once it has closed, so this is read again after every run, not just on open.
+   * A read that fails leaves the last list standing: a stale row still points at
+   * a real archive, and the undo itself says so if that archive is gone.
+   */
+  const refreshCheckpoints = useCallback(
+    async (sessionId: string) => {
+      const api = window.cake;
+      if (!api || sessionId === '') return;
+      try {
+        const rows = await api.checkpointTurns(sessionId);
+        patch(sessionId, (current) => ({ ...current, checkpoints: rows }));
+      } catch {
+        // The absence is reported by the undo itself, when someone asks for one.
+      }
+    },
+    [patch],
+  );
+
+  /**
    * Point the view at a session. One that is mid-turn keeps its own buffer: the
    * stored history is behind what has already arrived, and reloading would erase
    * the answer the session is still writing.
@@ -477,8 +498,9 @@ export function App() {
       const api = window.cake;
       if (!api) return;
       applySession(await api.openSession(sessionId));
+      await refreshCheckpoints(sessionId);
     },
-    [applySession],
+    [applySession, refreshCheckpoints],
   );
 
   useEffect(() => {
@@ -1115,6 +1137,7 @@ export function App() {
       await refreshSessions();
       await refreshContext();
       await refreshCost();
+      await refreshCheckpoints(sessionId);
       setFocusToken((value) => value + 1);
     }
   }, [
@@ -1130,6 +1153,7 @@ export function App() {
     refreshSessions,
     refreshContext,
     refreshCost,
+    refreshCheckpoints,
   ]);
 
   const stop = useCallback(() => {
@@ -1151,6 +1175,26 @@ export function App() {
       }
     },
     [activeSessionId, patch],
+  );
+
+  /**
+   * Give back what one turn changed. The card renders the answer, including the
+   * refusal when a later turn has since touched the same files, so this only
+   * carries the ask and re-reads the list once the answer is in.
+   */
+  const undoTurn = useCallback(
+    async (checkpointId: string, force: boolean) => {
+      const api = window.cake;
+      if (!api) throw new Error('cake bridge is not available');
+      const sessionId = activeRef.current;
+      try {
+        return await api.revertCheckpoint(checkpointId, force);
+      } finally {
+        // An archive the workspace has since pruned must not stay on offer.
+        await refreshCheckpoints(sessionId);
+      }
+    },
+    [refreshCheckpoints],
   );
 
   const toggleRail = useCallback(() => {
@@ -1549,7 +1593,14 @@ export function App() {
             ))}
 
             <main className="conversation">
-              <Transcript entries={entries} streaming={streaming} onInsertFile={insertFile} />
+              <Transcript
+                entries={entries}
+                streaming={streaming}
+                onInsertFile={insertFile}
+                checkpoints={checkpoints}
+                running={running}
+                onUndo={undoTurn}
+              />
 
               {approvals.length > 0 ? (
                 <div className="approvals" data-testid="approvals">

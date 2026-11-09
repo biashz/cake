@@ -263,6 +263,22 @@ describe('runTurn checkpoints', () => {
     expect(await readFile(path.join(cwd, 'a.ts'), 'utf8')).toBe('original\n');
   });
 
+  it('names the archive it closed, so a turn card can point at its own undo', async () => {
+    await writeFile(path.join(cwd, 'a.ts'), 'original\n', 'utf8');
+    const checkpoints = CheckpointStore.forWorkspace(cwd);
+    const model = new MockLanguageModelV4({
+      doStream: [
+        toolCallStream('write', { path: 'a.ts', content: 'rewritten\n' }),
+        textStream('done'),
+      ],
+    });
+
+    const result = await turnFor(model, { checkpoints });
+    const turn = await checkpoints.get(result.checkpointId ?? '');
+    if (!turn) throw new Error('the reported id names no archive');
+    expect(turn.entries.map((entry) => entry.path)).toEqual(['a.ts']);
+  });
+
   it('records nothing when the run was not told to archive', async () => {
     await writeFile(path.join(cwd, 'a.ts'), 'original\n', 'utf8');
     const checkpoints = CheckpointStore.forWorkspace(cwd);
@@ -273,7 +289,19 @@ describe('runTurn checkpoints', () => {
       ],
     });
 
-    await turnFor(model);
+    const result = await turnFor(model);
+    expect(await checkpoints.list()).toEqual([]);
+    expect(result.checkpointId).toBeUndefined();
+  });
+
+  it('names no archive for a turn that changed no file', async () => {
+    const checkpoints = CheckpointStore.forWorkspace(cwd);
+    const model = new MockLanguageModelV4({ doStream: [textStream('nothing to undo')] });
+
+    const result = await turnFor(model, { checkpoints });
+    // A card with nothing to undo shows no Undo button, so the absence has to
+    // be a fact about the turn rather than a missing file in the store.
+    expect(result.checkpointId).toBeUndefined();
     expect(await checkpoints.list()).toEqual([]);
   });
 });

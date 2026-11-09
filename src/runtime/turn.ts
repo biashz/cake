@@ -1,6 +1,6 @@
 import type { ModelMessage } from 'ai';
 import { runAgent } from '../core/agent.js';
-import type { CheckpointStore } from '../core/checkpoints.js';
+import type { CheckpointStore, CheckpointTurn } from '../core/checkpoints.js';
 import { createHistorySummarizer, maybeCompress } from '../core/context.js';
 import { addUsage, type CostLine, costLine } from '../core/cost.js';
 import type { AgentEvent, TokenUsage } from '../core/events.js';
@@ -59,6 +59,12 @@ export interface TurnResult {
   costUsd: number;
   /** The same spend, split by model and by the child agent that caused it. */
   lines: CostLine[];
+  /**
+   * The checkpoint this turn closed, so the turn can be pointed at later by
+   * name instead of by position. Absent when nothing was archived or when the
+   * run had no store to archive into.
+   */
+  checkpointId?: string;
 }
 
 /** Text alone stays a plain string; one image turns the prompt into content parts. */
@@ -173,6 +179,7 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
   };
 
   let result: Awaited<ReturnType<typeof runAgent>>;
+  let closed: CheckpointTurn | undefined;
   try {
     result = await runAgent(
       {
@@ -189,7 +196,7 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
   } finally {
     // Cancelled or failed is exactly when an undo is wanted, so the manifest
     // closes on every path out of the turn.
-    await undo?.finish();
+    closed = await undo?.finish();
   }
 
   lines.unshift(
@@ -202,5 +209,6 @@ export async function runTurn(options: TurnOptions): Promise<TurnResult> {
     usage: addUsage(result.usage, nestedUsage),
     costUsd: result.costUsd + nestedCostUsd,
     lines,
+    ...(closed ? { checkpointId: closed.id } : {}),
   };
 }

@@ -1,7 +1,16 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
+import type { RewindChange } from '../../../src/core/checkpoints.js';
+import type { CheckpointTurnRow, RevertResult } from '../../../src/desktop/api.js';
 import type { CodebaseHit } from '../../../src/rag/retrieval.js';
-import { buildTurns, type Entry, previewValue, type ToolInfo, type Turn } from '../transcript';
+import {
+  buildTurns,
+  type Entry,
+  linkUndos,
+  previewValue,
+  type ToolInfo,
+  type Turn,
+} from '../transcript';
 import { Icon } from './Icons';
 import { ToolCard } from './ToolCard';
 
@@ -249,6 +258,112 @@ function stats(turn: Turn): string {
   return parts.join(' · ');
 }
 
+/** What one file did in an undo, in the words a person can act on. */
+function undoneAs(change: RewindChange): string {
+  if (change.action === 'deleted') return 'removed (the turn created it)';
+  if (change.action === 'failed')
+    return `could not be put back (${change.note ?? 'unknown reason'})`;
+  if (change.action === 'left') return `left as it is (${change.note ?? 'no copy was kept'})`;
+  return 'put back';
+}
+
+/** Said every time an undo is on offer, because the archive really does not cover it. */
+const NOT_UNDONE = 'Changes a shell command or an MCP tool made are not in this undo.';
+
+type UndoState =
+  | { kind: 'idle' }
+  | { kind: 'working' }
+  | { kind: 'done'; result: RevertResult }
+  | { kind: 'failed'; message: string };
+
+/**
+ * The turn's own undo. It says which files go back before it offers to move them,
+ * and when a later turn has since changed the same files it stops and asks,
+ * because giving this one back would lose that work too.
+ */
+function UndoRow({
+  row,
+  running,
+  onUndo,
+  laterWords,
+}: {
+  row: CheckpointTurnRow;
+  running: boolean;
+  onUndo: (checkpointId: string, force: boolean) => Promise<RevertResult>;
+  laterWords: (ids: string[]) => string;
+}) {
+  const [state, setState] = useState<UndoState>({ kind: 'idle' });
+  const blocked = state.kind === 'done' && !state.result.applied;
+  const fileCount = row.files.length;
+  const shown =
+    fileCount <= 3
+      ? row.files.join(', ')
+      : `${row.files.slice(0, 3).join(', ')} +${fileCount - 3} more`;
+
+  const ask = (force: boolean) => {
+    setState({ kind: 'working' });
+    void (async () => {
+      try {
+        setState({ kind: 'done', result: await onUndo(row.checkpointId, force) });
+      } catch (err) {
+        setState({ kind: 'failed', message: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+  };
+
+  return (
+    <div className="turn-undo" data-testid="turn-undo">
+      <div className="turn-undo-ask">
+        <span className="turn-undo-files mono" title={row.files.join('\n')}>
+          {fileCount === 1 ? '1 file' : `${fileCount} files`}
+        </span>
+        <span className="turn-undo-hint">
+          {shown} {fileCount === 1 ? 'goes' : 'go'} back
+        </span>
+        <button
+          type="button"
+          className="turn-undo-button"
+          data-testid="turn-undo-button"
+          disabled={state.kind === 'working' || running}
+          title={running ? 'Wait for the running turn to finish' : undefined}
+          onClick={() => ask(blocked)}
+        >
+          {state.kind === 'working'
+            ? 'Giving it back…'
+            : blocked
+              ? 'Undo anyway'
+              : state.kind === 'done'
+                ? 'Undo again'
+                : 'Undo this turn'}
+        </button>
+      </div>
+      {state.kind === 'failed' ? (
+        <p className="turn-undo-error" data-testid="turn-undo-error" role="alert">
+          {state.message}
+        </p>
+      ) : null}
+      {state.kind === 'done' && !state.result.applied ? (
+        <p className="turn-undo-blocked" data-testid="turn-undo-blocked">
+          Nothing moved: {laterWords(state.result.overwrittenBy)}{' '}
+          {state.result.overwrittenBy.length === 1 ? 'has' : 'have'} changed these files since. Undo
+          anyway loses those changes too.
+        </p>
+      ) : null}
+      {state.kind === 'done' && state.result.applied ? (
+        <ul className="turn-undo-list" data-testid="turn-undo-list">
+          {state.result.changes.map((change) => (
+            <li key={change.path} className="mono">
+              <span className="turn-undo-path">{change.path}</span>{' '}
+              <span className="turn-undo-action">{undoneAs(change)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="turn-undo-caveat">{NOT_UNDONE}</p>
+    </div>
+  );
+}
+
 /** One request and everything done about it, collapsible so long sessions scan. */
 function TurnCard({
   turn,
@@ -258,6 +373,10 @@ function TurnCard({
   copy,
   copiedId,
   onInsertFile,
+  undo,
+  running,
+  onUndo,
+  laterWords,
 }: {
   turn: Turn;
   number: number;
@@ -266,6 +385,10 @@ function TurnCard({
   copy: (id: number, text: string) => void;
   copiedId: number | null;
   onInsertFile: (path: string) => void;
+  undo?: CheckpointTurnRow;
+  running: boolean;
+  onUndo: (checkpointId: string, force: boolean) => Promise<RevertResult>;
+  laterWords: (ids: string[]) => string;
 }) {
   const prompt = turn.user?.text ?? '';
   const images = turn.user?.images ?? [];
@@ -285,6 +408,11 @@ function TurnCard({
           </span>
         )}
         {summary === '' ? null : <span className="turn-stats mono">{summary}</span>}
+        {undo ? (
+          <span className="turn-undone-tag mono" title="This turn can be given back">
+            can undo
+          </span>
+        ) : null}
         <span className="turn-caret" aria-hidden="true">
           {open ? '▾' : '▸'}
         </span>
@@ -301,6 +429,9 @@ function TurnCard({
             </ul>
           )}
           {bodyNodes(turn.body, copy, copiedId, onInsertFile)}
+          {undo ? (
+            <UndoRow row={undo} running={running} onUndo={onUndo} laterWords={laterWords} />
+          ) : null}
         </div>
       ) : null}
     </section>
@@ -311,10 +442,17 @@ export function Transcript({
   entries,
   streaming,
   onInsertFile,
+  checkpoints,
+  running,
+  onUndo,
 }: {
   entries: Entry[];
   streaming: string;
   onInsertFile: (path: string) => void;
+  /** The session's turns that left an undo archive, as the kernel counted them. */
+  checkpoints: CheckpointTurnRow[];
+  running: boolean;
+  onUndo: (checkpointId: string, force: boolean) => Promise<RevertResult>;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -322,6 +460,16 @@ export function Transcript({
   const [closedTurns, setClosedTurns] = useState<number[]>([]);
 
   const turns = useMemo(() => buildTurns(entries), [entries]);
+  const undos = useMemo(() => linkUndos(turns, checkpoints), [turns, checkpoints]);
+
+  /** A blocked undo names the turns in the way by what they asked for. */
+  const laterWords = useCallback(
+    (ids: string[]) => {
+      const byId = new Map(checkpoints.map((row) => [row.checkpointId, row.prompt] as const));
+      return ids.map((id) => `“${previewValue(byId.get(id) ?? 'a later turn', 48)}”`).join(', ');
+    },
+    [checkpoints],
+  );
 
   // entries/streaming are effect triggers: new content should pull the view down.
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on new content
@@ -400,6 +548,10 @@ export function Transcript({
             copy={copy}
             copiedId={copied}
             onInsertFile={onInsertFile}
+            {...(undos.get(turn.key) ? { undo: undos.get(turn.key) } : {})}
+            running={running}
+            onUndo={onUndo}
+            laterWords={laterWords}
           />
         ))}
         {streaming ? <Bubble text={streaming} live /> : null}

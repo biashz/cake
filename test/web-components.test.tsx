@@ -4,12 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildCostBoard, type CostRow, emptyCostBoard } from '../src/core/cost-board.js';
 import type {
   AttachmentCaps,
+  CheckpointTurnRow,
   CostPayload,
   DoctorFixPayload,
   InitPayload,
   McpDraft,
   McpServerRow,
   McpStatus,
+  RevertResult,
   RuleScopeName,
   RulesPayload,
   SessionInfo,
@@ -31,8 +33,22 @@ import { SessionHeader } from '../web/src/components/SessionHeader';
 import { Sidebar } from '../web/src/components/Sidebar';
 import { ToolCard } from '../web/src/components/ToolCard';
 import { Transcript } from '../web/src/components/Transcript';
+import type { Entry } from '../web/src/transcript';
 
 afterEach(cleanup);
+
+/** A card with nothing to give back, which is what most transcript tests draw. */
+const noUndo = {
+  checkpoints: [] as CheckpointTurnRow[],
+  running: false,
+  onUndo: async () =>
+    ({
+      checkpointId: 'none',
+      applied: true,
+      changes: [],
+      overwrittenBy: [],
+    }) satisfies RevertResult,
+};
 
 describe('ToolCard', () => {
   it('renders an edit diff as a hunk and toggles details', () => {
@@ -853,6 +869,7 @@ describe('Transcript', () => {
         ]}
         streaming="partial"
         onInsertFile={vi.fn()}
+        {...noUndo}
       />,
     );
 
@@ -876,6 +893,7 @@ describe('Transcript', () => {
         ]}
         streaming=""
         onInsertFile={vi.fn()}
+        {...noUndo}
       />,
     );
 
@@ -891,6 +909,7 @@ describe('Transcript', () => {
         entries={[{ id: 1, role: 'user', text: 'no pictures here' }]}
         streaming=""
         onInsertFile={vi.fn()}
+        {...noUndo}
       />,
     );
     expect(screen.queryByRole('list', { name: 'Pictures sent with this turn' })).toBeNull();
@@ -924,6 +943,7 @@ describe('Transcript', () => {
         ]}
         streaming=""
         onInsertFile={vi.fn()}
+        {...noUndo}
       />,
     );
 
@@ -952,6 +972,7 @@ describe('Transcript', () => {
         ]}
         streaming=""
         onInsertFile={vi.fn()}
+        {...noUndo}
       />,
     );
 
@@ -995,6 +1016,7 @@ describe('Transcript', () => {
         ]}
         streaming=""
         onInsertFile={vi.fn()}
+        {...noUndo}
       />,
     );
 
@@ -1038,6 +1060,7 @@ describe('Transcript', () => {
         ]}
         streaming=""
         onInsertFile={onInsertFile}
+        {...noUndo}
       />,
     );
 
@@ -1062,6 +1085,7 @@ describe('Transcript', () => {
         ]}
         streaming=""
         onInsertFile={vi.fn()}
+        {...noUndo}
       />,
     );
 
@@ -1083,6 +1107,7 @@ describe('Transcript', () => {
         ]}
         streaming=""
         onInsertFile={vi.fn()}
+        {...noUndo}
       />,
     );
 
@@ -1092,7 +1117,7 @@ describe('Transcript', () => {
   });
 
   it('names the empty transcript instead of repeating the placeholder at you', () => {
-    render(<Transcript entries={[]} streaming="" onInsertFile={vi.fn()} />);
+    render(<Transcript entries={[]} streaming="" onInsertFile={vi.fn()} {...noUndo} />);
 
     expect(screen.getByTestId('transcript-empty').textContent).toBe('No turns yet.');
     // The invitation stays, but now it answers a named state rather than standing in
@@ -2055,5 +2080,176 @@ describe('Files panel', () => {
     expect(name.closest('.file-row')?.getAttribute('title')).toBe(
       'Add @src/components/deeply/nested/Inspector.tsx',
     );
+  });
+});
+
+describe('Transcript undo', () => {
+  /** One archived turn, as the kernel describes it. */
+  function archived(overrides: Partial<CheckpointTurnRow> = {}): CheckpointTurnRow {
+    return {
+      checkpointId: 'c-1',
+      prompt: 'rename the parser',
+      startedAt: 1_700_000_000_000,
+      files: ['src/parser.ts'],
+      ...overrides,
+    };
+  }
+
+  function reverted(overrides: Partial<RevertResult> = {}): RevertResult {
+    return {
+      checkpointId: 'c-1',
+      applied: true,
+      changes: [{ path: 'src/parser.ts', action: 'restored' }],
+      overwrittenBy: [],
+      ...overrides,
+    };
+  }
+
+  const asked: Entry[] = [
+    { id: 0, role: 'user', text: 'rename the parser' },
+    {
+      id: 1,
+      role: 'tool',
+      tool: {
+        callId: 'w-1',
+        name: 'write',
+        input: { path: 'src/parser.ts', content: 'x\n' },
+        status: 'done',
+      },
+    },
+  ];
+
+  function withUndo(
+    checkpoints: CheckpointTurnRow[],
+    onUndo: (checkpointId: string, force: boolean) => Promise<RevertResult>,
+    running = false,
+  ) {
+    render(
+      <Transcript
+        entries={asked}
+        streaming=""
+        onInsertFile={vi.fn()}
+        checkpoints={checkpoints}
+        running={running}
+        onUndo={onUndo}
+      />,
+    );
+  }
+
+  it('names the files an undo would give back before it offers one', () => {
+    withUndo(
+      [archived()],
+      vi.fn(async () => reverted()),
+    );
+
+    const row = screen.getByTestId('turn-undo');
+    expect(row.textContent).toContain('1 file');
+    expect(row.textContent).toContain('src/parser.ts');
+    expect(screen.getByTestId('turn-undo-button').textContent).toBe('Undo this turn');
+    // The limit of the archive is said with the offer, not after the fact.
+    expect(row.textContent).toContain(
+      'Changes a shell command or an MCP tool made are not in this undo.',
+    );
+    expect(screen.getByText('can undo').textContent).toBe('can undo');
+  });
+
+  it('offers no undo to a turn that changed no file', () => {
+    withUndo(
+      [],
+      vi.fn(async () => reverted()),
+    );
+    expect(screen.queryByTestId('turn-undo')).toBeNull();
+    expect(screen.queryByText('can undo')).toBeNull();
+  });
+
+  it('gives the files back and says what moved', async () => {
+    const onUndo = vi.fn(async () => reverted());
+    withUndo([archived()], onUndo);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('turn-undo-button'));
+    });
+
+    expect(onUndo).toHaveBeenCalledWith('c-1', false);
+    const list = screen.getByTestId('turn-undo-list');
+    expect(list.textContent).toContain('src/parser.ts');
+    expect(list.textContent).toContain('put back');
+    expect(screen.getByTestId('turn-undo-button').textContent).toBe('Undo again');
+  });
+
+  it('names a file it could not keep a copy of as it is', async () => {
+    const onUndo = vi.fn(
+      async (): Promise<RevertResult> =>
+        reverted({
+          changes: [{ path: 'big.ts', action: 'left', note: 'no copy was kept: too large' }],
+        }),
+    );
+    withUndo([archived()], onUndo);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('turn-undo-button'));
+    });
+
+    expect(screen.getByTestId('turn-undo-list').textContent).toContain(
+      'left as it is (no copy was kept: too large)',
+    );
+  });
+
+  it('stops when a later turn has the same files, and only goes on when asked twice', async () => {
+    const rows = [archived(), archived({ checkpointId: 'c-2', prompt: 'split the parser' })];
+    const asks: [string, boolean][] = [];
+    const onUndo = vi.fn(async (id: string, force: boolean): Promise<RevertResult> => {
+      asks.push([id, force]);
+      // The first ask is refused; the second, after the card has been told why,
+      // is the one that says to go ahead anyway.
+      return asks.length === 1
+        ? reverted({ applied: false, changes: [], overwrittenBy: ['c-2'] })
+        : reverted();
+    });
+    withUndo(rows, onUndo);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('turn-undo-button'));
+    });
+
+    const blocked = screen.getByTestId('turn-undo-blocked');
+    // Who is in the way, in the words they themselves used.
+    expect(blocked.textContent).toContain('“split the parser”');
+    expect(blocked.textContent).toContain('Nothing moved');
+    expect(asks).toEqual([['c-1', false]]);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('turn-undo-button'));
+    });
+
+    expect(asks).toEqual([
+      ['c-1', false],
+      ['c-1', true],
+    ]);
+    expect(screen.queryByTestId('turn-undo-blocked')).toBeNull();
+    expect(screen.getByTestId('turn-undo-list')).toBeTruthy();
+  });
+
+  it('says what the kernel answered instead of pretending it moved', async () => {
+    const onUndo = vi.fn(() => Promise.reject(new Error('Cannot undo while a turn is running')));
+    withUndo([archived()], onUndo);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('turn-undo-button'));
+    });
+
+    expect(screen.getByTestId('turn-undo-error').textContent).toContain(
+      'Cannot undo while a turn is running',
+    );
+    expect(screen.queryByTestId('turn-undo-list')).toBeNull();
+  });
+
+  it('waits for the turn on screen before it will touch the files', () => {
+    withUndo(
+      [archived()],
+      vi.fn(async () => reverted()),
+      true,
+    );
+    expect((screen.getByTestId('turn-undo-button') as HTMLButtonElement).disabled).toBe(true);
   });
 });

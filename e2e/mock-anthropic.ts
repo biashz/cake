@@ -8,12 +8,25 @@ export interface MockRequest {
   imageParts: number;
 }
 
+export interface MockWrite {
+  path: string;
+  content: string;
+}
+
 export interface MockAnthropicOptions {
   /**
    * Answer a prompt with this plain text instead of the usual write-tool flow.
    * Returning null leaves the turn to the tool path.
    */
   plainText?: (prompt: string) => string | null;
+  /**
+   * Ask for this write at the start of a turn, even one whose history already
+   * carries tool results. Without it only the session's first turn ever writes,
+   * because the usual rule reads the whole history: a checkpoint spec needs a
+   * second turn to change the file the first turn created. Returning null
+   * leaves the turn to the usual flow.
+   */
+  writes?: (prompt: string) => MockWrite | null;
   /**
    * Hold every plain-text answer until this many requests are open at once.
    * An app that runs one turn at a time never fills the queue, so a spec that
@@ -30,6 +43,12 @@ export interface MockAnthropic {
 
 type Json = Record<string, unknown>;
 
+/** One streamed reply: pairs of SSE event names and their JSON payloads. */
+type SseEvents = readonly (readonly [string, Json])[];
+
+/** What the tool flow writes unless a spec asks for a different file. */
+const DEFAULT_WRITE: MockWrite = { path: 'hello.txt', content: 'hello from e2e\n' };
+
 function messagesOf(body: Json): Json[] {
   return Array.isArray(body.messages) ? (body.messages as Json[]) : [];
 }
@@ -39,6 +58,13 @@ function hasToolResult(messages: Json[]): boolean {
     const content = message.content;
     return Array.isArray(content) && content.some((part) => (part as Json).type === 'tool_result');
   });
+}
+
+/** The newest user message reports a tool result, so the turn is mid-flight. */
+function justReported(messages: Json[]): boolean {
+  const last = messages[messages.length - 1];
+  if (last?.role !== 'user') return false;
+  return hasToolResult([last]);
 }
 
 /** Anthropic's wire shape for a picture: `{type:'image', source:{type:'base64', data}}`. */
@@ -119,7 +145,7 @@ function textResponse(model: string, text: string) {
   ] as const;
 }
 
-function writeToolResponse(model: string) {
+function writeToolResponse(model: string, write: MockWrite) {
   return [
     [
       'message_start',
@@ -152,7 +178,7 @@ function writeToolResponse(model: string) {
         index: 0,
         delta: {
           type: 'input_json_delta',
-          partial_json: JSON.stringify({ path: 'hello.txt', content: 'hello from e2e\n' }),
+          partial_json: JSON.stringify(write),
         },
       },
     ],
@@ -182,6 +208,8 @@ export async function startMockAnthropic(
   const requests: MockRequest[] = [];
   const gate = options.holdUntil ?? 0;
   const waiting: Array<() => void> = [];
+  /** The file the last tool call wrote, so the reply that closes the turn names it. */
+  let wrote = DEFAULT_WRITE.path;
 
   /** Answer everything queued once enough turns are open at the same time. */
   function flush(): void {
@@ -230,12 +258,21 @@ export async function startMockAnthropic(
 
       const model = typeof body.model === 'string' ? body.model : 'claude-sonnet-4-5';
       const plain = options.plainText?.(lastUserText(messages)) ?? null;
-      const events =
-        plain !== null
-          ? textResponse(model, plain)
-          : toolResult
-            ? textResponse(model, 'Created hello.txt.')
-            : writeToolResponse(model);
+      // A forced write applies only where a turn opens: mid-flight the answer has
+      // to close the turn, or the tool call it asks for never ends.
+      const forced = justReported(messages)
+        ? null
+        : (options.writes?.(lastUserText(messages)) ?? null);
+      let events: SseEvents;
+      if (plain !== null) events = textResponse(model, plain);
+      else if (forced !== null) {
+        wrote = forced.path;
+        events = writeToolResponse(model, forced);
+      } else if (toolResult) events = textResponse(model, `Created ${wrote}.`);
+      else {
+        wrote = DEFAULT_WRITE.path;
+        events = writeToolResponse(model, DEFAULT_WRITE);
+      }
 
       const send = () => {
         response.writeHead(200, {

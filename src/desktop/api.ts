@@ -1,4 +1,5 @@
 import type { ModelMessage } from 'ai';
+import type { RewindChange } from '../core/checkpoints.js';
 import type { CostBoard, WorkspaceSpend } from '../core/cost-board.js';
 import type { Pricing, PricingSource } from '../core/pricing.js';
 import type { CodebaseHit } from '../rag/retrieval.js';
@@ -214,6 +215,32 @@ export interface RunResult {
   text: string;
 }
 
+/**
+ * One session turn that left an undo archive. `prompt` is what the turn asked
+ * for in the user's own words, which is how a transcript card recognises this as
+ * its own undo; `checkpointId` is what the rewind is pointed at. A turn missing
+ * here changed no file, so there is nothing for its card to give back.
+ */
+export interface CheckpointTurnRow {
+  checkpointId: string;
+  prompt: string;
+  startedAt: number;
+  /** What the archive can put back, spelled the way a write or edit call spells it. */
+  files: string[];
+}
+
+/**
+ * The answer to asking for an undo. `applied` is false when a later turn
+ * changed the same files and nobody has said to go ahead regardless.
+ */
+export interface RevertResult {
+  checkpointId: string;
+  applied: boolean;
+  changes: RewindChange[];
+  /** Checkpoint ids of the later turns that stand in the way. */
+  overwrittenBy: string[];
+}
+
 export type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 
 /** A config file a fix can open; only these names cross IPC, never a path. */
@@ -304,6 +331,14 @@ export interface CakeApi {
   forkSession(id: string): Promise<SessionPayload>;
   /** Write a session's transcript as Markdown, pictures and all; returns where each went. */
   exportSession(id: string, file?: string): Promise<ExportResult>;
+
+  /** The turns of one session that left an undo archive, oldest turn first. */
+  checkpointTurns(sessionId: string): Promise<CheckpointTurnRow[]>;
+  /**
+   * Give back what one turn changed. Refuses while any session is running,
+   * because a turn in flight is writing files this would step on.
+   */
+  revertCheckpoint(checkpointId: string, force?: boolean): Promise<RevertResult>;
 
   run(sessionId: string, prompt: string, images?: string[]): Promise<RunResult>;
   /** Stop one session's turn; other sessions keep running. */

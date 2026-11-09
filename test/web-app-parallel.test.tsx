@@ -6,6 +6,7 @@ import type {
   AgentEventEnvelope,
   AgentNoteEnvelope,
   CakeApi,
+  CheckpointTurnRow,
   ContextPayload,
   InitPayload,
   PermissionRequestEnvelope,
@@ -27,8 +28,14 @@ interface FakeKernel {
   api: CakeApi;
   /** One call of `run`, in the order they arrived. A pending turn is not in the store yet. */
   turns: { sessionId: string; prompt: string }[];
+  /** Each read of the undo archives, in order: which session was asked for its list. */
+  reads: string[];
+  /** Each rewind asked for, with the confirmation that meant to override a conflict. */
+  reverts: { checkpointId: string; force: boolean }[];
+  /** The archives on offer, per session, in the shape the kernel answers with. */
+  archives: Record<string, CheckpointTurnRow[]>;
   /** Answer a pending turn: write its exchange to the store, then close the run. */
-  settle(sessionId: string, answer: string): Promise<void>;
+  settle(sessionId: string, answer: string, undo?: { path: string }): Promise<void>;
   /** Close a pending turn with an error, leaving nothing in the store. */
   fail(sessionId: string, message: string): Promise<void>;
   emit(sessionId: string, event: unknown): Promise<void>;
@@ -49,6 +56,10 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
   const answered: { id: string; decision: string }[] = [];
   const waiters = new Map<string, (result: RunResult) => void>();
   const failers = new Map<string, (err: Error) => void>();
+  const reads: string[] = [];
+  const reverts: { checkpointId: string; force: boolean }[] = [];
+  const archives: Record<string, CheckpointTurnRow[]> = { s1: [], s2: [] };
+  let archived = 0;
 
   const session = (id: string): SessionInfo => ({
     id,
@@ -128,6 +139,22 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
     deleteSession: async () => null,
     forkSession: async (id) => payload(id),
     exportSession: async () => ({ file: 'out.md', pictures: 0 }),
+    checkpointTurns: async (sessionId) => {
+      reads.push(sessionId);
+      return archives[sessionId] ?? [];
+    },
+    revertCheckpoint: async (checkpointId, force) => {
+      reverts.push({ checkpointId, force: force === true });
+      const row = Object.values(archives)
+        .flat()
+        .find((item) => item.checkpointId === checkpointId);
+      return {
+        checkpointId,
+        applied: true,
+        changes: (row?.files ?? []).map((file) => ({ path: file, action: 'restored' as const })),
+        overwrittenBy: [],
+      };
+    },
     run: async (sessionId, prompt) =>
       new Promise<RunResult>((resolve, reject) => {
         turns.push({ sessionId, prompt });
@@ -182,7 +209,10 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
     turns,
     answered,
     stored,
-    settle: async (sessionId, answer) => {
+    reads,
+    reverts,
+    archives,
+    settle: async (sessionId, answer, undo) => {
       const waiter = waiters.get(sessionId);
       if (!waiter) throw new Error(`no turn running in ${sessionId}`);
       waiters.delete(sessionId);
@@ -194,6 +224,19 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
         { role: 'user', content: prompt },
         { role: 'assistant', content: answer },
       ];
+      // ...and names the archive it closed with the same prompt, when the turn moved a file.
+      if (undo) {
+        archived += 1;
+        archives[sessionId] = [
+          ...(archives[sessionId] ?? []),
+          {
+            checkpointId: `c-${archived}`,
+            prompt,
+            startedAt: archived,
+            files: [undo.path],
+          },
+        ];
+      }
       await send(() => {
         for (const handler of events) {
           handler({
@@ -513,5 +556,79 @@ describe('App with two sessions', () => {
     await ui.open('s2');
 
     expect(screen.getByTestId('rail-announce').textContent).toBe('');
+  });
+});
+
+describe('App undo wiring', () => {
+  /** The last session whose archive list the app asked for. */
+  function lastRead(kernel: FakeKernel): string | undefined {
+    return kernel.reads[kernel.reads.length - 1];
+  }
+
+  it('re-reads the archives once the turn is over, so the card gets its undo', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+    const before = kernel.reads.length;
+
+    await ui.type('rewrite the parser');
+    await kernel.settle('s1', 'parser rewritten', { path: 'src/parser.ts' });
+
+    // A turn that moved a file has to be read again, not kept as the list from
+    // before it ran: the archive only exists now.
+    expect(kernel.reads.length).toBeGreaterThan(before);
+    expect(lastRead(kernel)).toBe('s1');
+    await waitFor(() => expect(screen.getByTestId('turn-undo')).toBeTruthy());
+    expect(screen.getByTestId('turn-undo').textContent).toContain('src/parser.ts goes back');
+  });
+
+  it('keeps the undo on the card of the session that asked, across a switch', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('rewrite the parser');
+    await kernel.settle('s1', 'parser rewritten', { path: 'src/parser.ts' });
+    await waitFor(() => expect(screen.getByTestId('turn-undo')).toBeTruthy());
+
+    await ui.open('s2');
+    expect(screen.queryAllByTestId('turn-undo')).toHaveLength(0);
+
+    // Back to a transcript rebuilt from stored messages: the archive is still
+    // found, so the link rides on what the turn asked for, not on memory.
+    await ui.open('s1');
+    await waitFor(() => expect(screen.queryAllByTestId('turn-undo')).toHaveLength(1));
+    expect(lastRead(kernel)).toBe('s1');
+  });
+
+  it('points the rewind at the archive its own card was given', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('rewrite the parser');
+    await kernel.settle('s1', 'parser rewritten', { path: 'src/parser.ts' });
+    await waitFor(() => expect(screen.getByTestId('turn-undo-button')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('turn-undo-button'));
+
+    await waitFor(() => expect(kernel.reverts).toEqual([{ checkpointId: 'c-1', force: false }]));
+    await waitFor(() =>
+      expect(screen.getByTestId('turn-undo-list').textContent).toContain('src/parser.ts put back'),
+    );
+  });
+
+  it('takes the offer away when the archive behind it is gone', async () => {
+    const kernel = fakeKernel({ s1: [], s2: [] });
+    const ui = await boot(kernel);
+
+    await ui.type('rewrite the parser');
+    await kernel.settle('s1', 'parser rewritten', { path: 'src/parser.ts' });
+    await waitFor(() => expect(screen.getByTestId('turn-undo-button')).toBeTruthy());
+
+    // The workspace pruned the archive while the card sat open: asking for it is
+    // the last time it will ever be offered.
+    kernel.archives.s1 = [];
+    fireEvent.click(screen.getByTestId('turn-undo-button'));
+
+    await waitFor(() => expect(kernel.reverts).toHaveLength(1));
+    await waitFor(() => expect(screen.queryAllByTestId('turn-undo')).toHaveLength(0));
   });
 });

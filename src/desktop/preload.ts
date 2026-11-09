@@ -26,6 +26,10 @@ const api: CakeApi = {
   forkSession: (id) => ipcRenderer.invoke('session:fork', { id }),
   exportSession: (id, file) => ipcRenderer.invoke('session:export', { id, file }),
 
+  checkpointTurns: (sessionId) => ipcRenderer.invoke('checkpoint:turns', { sessionId }),
+  revertCheckpoint: (checkpointId, force) =>
+    ipcRenderer.invoke('checkpoint:revert', { checkpointId, force }),
+
   run: (sessionId, prompt, images) =>
     ipcRenderer.invoke('agent:run', { sessionId, prompt, images }),
   abort: (sessionId) => ipcRenderer.invoke('agent:abort', { id: sessionId }),

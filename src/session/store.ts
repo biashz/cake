@@ -132,6 +132,20 @@ const SCHEMA = `
     PRIMARY KEY (session_id, turn, seq)
   );
   CREATE INDEX IF NOT EXISTS sessions_cwd_updated ON sessions (cwd, updated_at DESC);
+  -- Which turn closed which undo archive. The archive itself lives in
+  -- .cake/checkpoints; this only names it, so deleting a session cannot leave
+  -- a turn pointing at a checkpoint that was never ours.
+  CREATE TABLE IF NOT EXISTS turn_checkpoints (
+    session_id TEXT NOT NULL,
+    turn INTEGER NOT NULL,
+    checkpoint_id TEXT NOT NULL,
+    -- The prompt that opened the turn, kept because it is the only description of
+    -- a turn both this table and a transcript card can compare. Turn numbers
+    -- cannot be that key: history compression rewrites the stored messages, so
+    -- the turn a card shows and the turn that was billed drift apart for ever.
+    prompt TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (session_id, turn)
+  );
 `;
 
 /** Project-local session persistence backed by node:sqlite. */
@@ -154,6 +168,15 @@ export class SessionStore {
     ];
     for (const [name, ddl] of additions) {
       if (!columns.has(name)) this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${ddl}`);
+    }
+    // Same for an archive link written before the prompt was part of it.
+    const linkColumns = new Set(
+      (this.db.prepare('PRAGMA table_info(turn_checkpoints)').all() as Array<{ name: string }>).map(
+        (column) => column.name,
+      ),
+    );
+    if (!linkColumns.has('prompt')) {
+      this.db.exec(`ALTER TABLE turn_checkpoints ADD COLUMN prompt TEXT NOT NULL DEFAULT ''`);
     }
   }
 
@@ -309,8 +332,17 @@ export class SessionStore {
   /**
    * Bill one turn: one row per model that ran, then the session roll-up from the
    * same lines, so the two can never disagree. Turns are numbered per session.
+   *
+   * The turn's undo archive is named in the same transaction, with the prompt
+   * that opened the turn kept beside it. That prompt is what lets a transcript
+   * card find its own undo later: turn numbers cannot do the job, because a
+   * compressed or failed turn changes what the nth turn is.
    */
-  addTurnUsage(id: string, lines: readonly CostLine[]): void {
+  addTurnUsage(
+    id: string,
+    lines: readonly CostLine[],
+    undo?: { checkpointId: string; prompt: string },
+  ): void {
     if (lines.length === 0) return;
     const last = this.db
       .prepare('SELECT MAX(turn) AS turn FROM turn_usage WHERE session_id = ?')
@@ -359,6 +391,14 @@ export class SessionStore {
            WHERE id = ?`,
         )
         .run(totalTokens, costUsd, unpricedTokens, now, id);
+      if (undo !== undefined) {
+        this.db
+          .prepare(
+            `INSERT OR REPLACE INTO turn_checkpoints (session_id, turn, checkpoint_id, prompt)
+             VALUES (?, ?, ?, ?)`,
+          )
+          .run(id, turn, undo.checkpointId, undo.prompt);
+      }
       this.db.exec('COMMIT');
     } catch (err) {
       this.db.exec('ROLLBACK');
@@ -384,6 +424,24 @@ export class SessionStore {
       totalTokens: row.total_tokens,
       costUsd: row.cost_usd,
       priced: row.priced === 1,
+    }));
+  }
+
+  /**
+   * Which turn closed which undo archive, oldest turn first, with the prompt that
+   * opened it. A turn is missing from this list when it changed no file, which is
+   * the common case and not a failure to record.
+   */
+  turnCheckpoints(id: string): Array<{ turn: number; checkpointId: string; prompt: string }> {
+    const rows = this.db
+      .prepare(
+        'SELECT turn, checkpoint_id, prompt FROM turn_checkpoints WHERE session_id = ? ORDER BY turn',
+      )
+      .all(id) as unknown as Array<{ turn: number; checkpoint_id: string; prompt: string }>;
+    return rows.map((row) => ({
+      turn: row.turn,
+      checkpointId: row.checkpoint_id,
+      prompt: row.prompt,
     }));
   }
 
@@ -439,6 +497,7 @@ export class SessionStore {
     try {
       this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
       this.db.prepare('DELETE FROM turn_usage WHERE session_id = ?').run(id);
+      this.db.prepare('DELETE FROM turn_checkpoints WHERE session_id = ?').run(id);
       this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
       this.db.exec('COMMIT');
     } catch (err) {

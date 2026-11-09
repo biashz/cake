@@ -1,4 +1,9 @@
-import type { ModelHandle, PermissionRequestPayload, TokenTotals } from '../../src/desktop/api.js';
+import type {
+  CheckpointTurnRow,
+  ModelHandle,
+  PermissionRequestPayload,
+  TokenTotals,
+} from '../../src/desktop/api.js';
 import type { TaskItem } from '../../src/tools/types.js';
 import type { Entry } from './transcript';
 
@@ -17,6 +22,12 @@ export interface RunBuffer {
   runModel: ModelHandle | null;
   plan: TaskItem[];
   usage: TokenTotals | null;
+  /**
+   * The turns of this session that left an undo archive, as the kernel last
+   * counted them. Fetched when the session opens and after every turn, because
+   * a turn only names its archive once it has closed.
+   */
+  checkpoints: CheckpointTurnRow[];
 }
 
 export const emptyBuffer: RunBuffer = {
@@ -28,6 +39,7 @@ export const emptyBuffer: RunBuffer = {
   runModel: null,
   plan: [],
   usage: null,
+  checkpoints: [],
 };
 
 /** Buffers keyed by session id; the empty id holds whatever has no session yet. */

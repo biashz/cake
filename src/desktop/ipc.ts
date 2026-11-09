@@ -4,6 +4,7 @@ import { MAX_IMAGE_URL_CHARS, MAX_IMAGES_PER_TURN } from '../core/images.js';
 import type { Pricing } from '../core/pricing.js';
 import type { ExportResult } from '../session/export.js';
 import type {
+  CheckpointTurnRow,
   ContextPayload,
   CostPayload,
   DoctorFileTargetName,
@@ -13,6 +14,7 @@ import type {
   McpDraft,
   PermissionDecisionName,
   PermissionModeName,
+  RevertResult,
   RuleListName,
   RuleMove,
   RuleScopeName,
@@ -31,6 +33,9 @@ export interface DesktopBackend {
   deleteSession(id: string): SessionPayload | null;
   forkSession(id: string): SessionPayload;
   exportSession(id: string, file?: string): ExportResult;
+  checkpointTurns(sessionId: string): Promise<CheckpointTurnRow[]>;
+  /** `force` is only ever true when the renderer asked after seeing the block. */
+  revertCheckpoint(checkpointId: string, force?: boolean): Promise<RevertResult>;
   run(sessionId: string, prompt: string, images: string[]): Promise<RunResult>;
   abort(sessionId: string): void;
   respondPermission(id: string, decision: PermissionDecisionName): void;
@@ -82,6 +87,16 @@ const sessionSchema = z.object({
 const exportSchema = z.object({
   id: z.string().min(1),
   file: z.string().min(1).max(300).optional(),
+});
+
+/** An undo is pointed at by the id the store gave the turn, never by position. */
+const checkpointTurnsSchema = z.object({
+  sessionId: z.string().min(1),
+});
+
+const revertSchema = z.object({
+  checkpointId: z.string().min(1).max(80),
+  force: z.boolean().optional(),
 });
 
 const permissionSchema = z.object({
@@ -197,6 +212,12 @@ export function createHandlers(backend: DesktopBackend): Record<string, Handler>
     'session:export': async (payload) => {
       const { id, file } = validate(exportSchema, payload);
       return backend.exportSession(id, file);
+    },
+    'checkpoint:turns': async (payload) =>
+      backend.checkpointTurns(validate(checkpointTurnsSchema, payload).sessionId),
+    'checkpoint:revert': async (payload) => {
+      const { checkpointId, force } = validate(revertSchema, payload);
+      return backend.revertCheckpoint(checkpointId, force);
     },
     'agent:run': async (payload) => {
       const { sessionId, prompt, images } = validate(runSchema, payload);

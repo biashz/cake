@@ -319,7 +319,11 @@ async function runHeadless(options: HeadlessOptions): Promise<void> {
     );
     store.setTitleIfEmpty(session.id, prompt);
     store.saveMessages(session.id, result.messages);
-    store.addTurnUsage(session.id, result.lines);
+    store.addTurnUsage(
+      session.id,
+      result.lines,
+      result.checkpointId ? { checkpointId: result.checkpointId, prompt } : undefined,
+    );
     process.stderr.write(`[session] ${session.id}\n`);
   } catch (err) {
     process.stdout.write('\n');

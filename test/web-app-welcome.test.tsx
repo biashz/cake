@@ -75,6 +75,13 @@ function bridge(overrides: { workspace: InitPayload['workspace']; asked: () => v
       throw new Error('No workspace is open');
     },
     exportSession: async () => ({ file: 'out.md', pictures: 0 }),
+    checkpointTurns: async () => [],
+    revertCheckpoint: async () => ({
+      checkpointId: 'turn',
+      applied: true,
+      changes: [],
+      overwrittenBy: [],
+    }),
     run: async () => {
       throw new Error('No workspace is open');
     },

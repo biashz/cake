@@ -9,6 +9,7 @@ import type {
   DoctorStoreTargetName,
   InitPayload,
   McpStatus,
+  RevertResult,
   RulesPayload,
   RunResult,
   SessionInfo,
@@ -140,6 +141,13 @@ const exportResult: ExportResult = {
   pictures: 0,
 };
 
+const revertResult: RevertResult = {
+  checkpointId: '0000000000001-abcd1234',
+  applied: true,
+  changes: [{ path: 'a.ts', action: 'restored' }],
+  overwrittenBy: [],
+};
+
 const runResult: RunResult = {
   sessionId: 'session-1',
   usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
@@ -162,6 +170,8 @@ function backend(): DesktopBackend {
     deleteSession: vi.fn(() => sessionPayload),
     forkSession: vi.fn(() => sessionPayload),
     exportSession: vi.fn(() => exportResult),
+    checkpointTurns: vi.fn(async () => []),
+    revertCheckpoint: vi.fn(async () => revertResult),
     run: vi.fn(async () => runResult),
     abort: vi.fn(),
     respondPermission: vi.fn(),
@@ -229,6 +239,32 @@ describe('desktop IPC handlers', () => {
       await expect(handlers['session:export']?.(payload)).rejects.toThrow(/Invalid/);
     }
     expect(fake.exportSession).not.toHaveBeenCalled();
+  });
+
+  it('carries an undo request to the controller, force and all', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+
+    expect(await handlers['checkpoint:turns']?.({ sessionId: 'session-1' })).toEqual([]);
+    expect(fake.checkpointTurns).toHaveBeenCalledWith('session-1');
+    expect(
+      await handlers['checkpoint:revert']?.({ checkpointId: revertResult.checkpointId }),
+    ).toEqual(revertResult);
+    expect(fake.revertCheckpoint).toHaveBeenCalledWith(revertResult.checkpointId, undefined);
+    await handlers['checkpoint:revert']?.({ checkpointId: revertResult.checkpointId, force: true });
+    expect(fake.revertCheckpoint).toHaveBeenLastCalledWith(revertResult.checkpointId, true);
+  });
+
+  it('refuses an undo request that names no archive', async () => {
+    const fake = backend();
+    const handlers = createHandlers(fake);
+
+    for (const payload of [{}, { checkpointId: '' }, { sessionId: 'session-1' }]) {
+      await expect(handlers['checkpoint:revert']?.(payload)).rejects.toThrow(/Invalid/);
+    }
+    expect(fake.revertCheckpoint).not.toHaveBeenCalled();
+    await expect(handlers['checkpoint:turns']?.({})).rejects.toThrow(/Invalid/);
+    expect(fake.checkpointTurns).not.toHaveBeenCalled();
   });
 
   it('accepts every declared doctor file target', async () => {

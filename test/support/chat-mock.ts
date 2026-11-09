@@ -23,6 +23,12 @@ export interface ChatMock {
   arrived(count: number): Promise<ChatRequest[]>;
   /** Answer the oldest waiting request with this text, as the provider would. */
   reply(text: string): void;
+  /**
+   * Answer the oldest waiting request by asking for a tool, as the provider
+   * would: the client runs it and comes back with the result, so the test
+   * answers that second request with `reply` to end the turn.
+   */
+  replyTool(name: string, input: Json): void;
   /** Answer the waiting request that asked this, whatever order it arrived in. */
   replyTo(ask: string, text: string): void;
   close(): Promise<void>;
@@ -35,6 +41,8 @@ interface Gate {
   /** The prompt this answer belongs to, so a test can pick it out. */
   ask: string;
   answer(text: string): void;
+  /** Answer by asking for a tool instead, which sends the client away again. */
+  tool(name: string, input: Json): void;
 }
 
 function lastUserText(body: Json): string {
@@ -51,22 +59,23 @@ function lastUserText(body: Json): string {
     .join('');
 }
 
+function messageStart(model: string): Json {
+  return {
+    type: 'message_start',
+    message: {
+      id: 'mock_turn',
+      type: 'message',
+      role: 'assistant',
+      model,
+      content: [],
+      usage: { input_tokens: 11, output_tokens: 1 },
+    },
+  };
+}
+
 function stream(text: string, model: string): string {
   const events: [string, Json][] = [
-    [
-      'message_start',
-      {
-        type: 'message_start',
-        message: {
-          id: 'mock_turn',
-          type: 'message',
-          role: 'assistant',
-          model,
-          content: [],
-          usage: { input_tokens: 11, output_tokens: 1 },
-        },
-      },
-    ],
+    ['message_start', messageStart(model)],
     [
       'content_block_start',
       { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
@@ -79,6 +88,38 @@ function stream(text: string, model: string): string {
     [
       'message_delta',
       { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 7 } },
+    ],
+    ['message_stop', { type: 'message_stop' }],
+  ];
+  return events
+    .map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    .join('');
+}
+
+/** The same shape with one tool_use block, which is how the vendor asks for a call. */
+function toolStream(name: string, input: Json, model: string): string {
+  const events: [string, Json][] = [
+    ['message_start', messageStart(model)],
+    [
+      'content_block_start',
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'mock_tool_1', name, input: {} },
+      },
+    ],
+    [
+      'content_block_delta',
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+      },
+    ],
+    ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+    [
+      'message_delta',
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 7 } },
     ],
     ['message_stop', { type: 'message_stop' }],
   ];
@@ -112,18 +153,20 @@ export async function startChatMock(): Promise<ChatMock> {
 
       // Hold the answer: the test decides when, and in what order, requests finish.
       let answered = false;
+      const send = (body: string) => {
+        if (answered) return;
+        answered = true;
+        if (response.destroyed) return;
+        response.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+        });
+        response.end(body);
+      };
       const gate: Gate = {
         ask: prompt,
-        answer: (text) => {
-          if (answered) return;
-          answered = true;
-          if (response.destroyed) return;
-          response.writeHead(200, {
-            'content-type': 'text/event-stream',
-            'cache-control': 'no-cache',
-          });
-          response.end(stream(text, model));
-        },
+        answer: (text) => send(stream(text, model)),
+        tool: (name, input) => send(toolStream(name, input, model)),
       };
       held.push(gate);
       waiters.shift()?.();
@@ -158,6 +201,11 @@ export async function startChatMock(): Promise<ChatMock> {
       const next = held.shift();
       if (!next) throw new Error('No waiting request to answer');
       next.answer(text);
+    },
+    replyTool(name, input) {
+      const next = held.shift();
+      if (!next) throw new Error('No waiting request to answer');
+      next.tool(name, input);
     },
     replyTo(ask, text) {
       const at = held.findIndex((gate) => gate.ask.includes(ask));

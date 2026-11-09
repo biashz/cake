@@ -3,6 +3,7 @@ import path from 'node:path';
 import fg from 'fast-glob';
 import { configPaths, loadConfig } from '../config/config.js';
 import { setPricingEntry, setProviderApiKey } from '../config/write.js';
+import { CheckpointStore } from '../core/checkpoints.js';
 import {
   buildSystemPrompt,
   estimateTextTokens,
@@ -60,6 +61,7 @@ import type {
 } from '../tools/types.js';
 import { VERSION } from '../version.js';
 import type {
+  CheckpointTurnRow,
   ContextEntryPayload,
   ContextPayload,
   CostPayload,
@@ -73,6 +75,7 @@ import type {
   PermissionModeName,
   PricingRow,
   ProviderSummary,
+  RevertResult,
   RuleScopeName,
 } from './api.js';
 import { buildContextMap } from './context-map.js';
@@ -116,6 +119,8 @@ interface ActiveWorkspace {
   /** Rate-card additions from this workspace's config. */
   pricing: PricingOverrides;
   mcp: McpBundle;
+  /** This workspace's undo archive: every turn names its own entry in it. */
+  checkpoints: CheckpointStore;
   embedder: Embedder | undefined;
   model: ModelSpec;
   mode: PermissionMode;
@@ -228,6 +233,7 @@ export class WorkspaceController implements DesktopBackend {
         settings,
         pricing: workspaceConfig.pricing,
         mcp,
+        checkpoints: CheckpointStore.forWorkspace(cwd),
         embedder: resolveEmbedder(this.registry),
         model,
         mode: previousMode ?? 'default',
@@ -309,6 +315,50 @@ export class WorkspaceController implements DesktopBackend {
       throw new Error('Export path has to stay inside the workspace');
     }
     return exportSessionMarkdown(active.store, id, target);
+  }
+
+  /**
+   * The turns of one session that can be given back, oldest first. Each carries
+   * the prompt it closed with, because that is how a transcript card recognises
+   * its own undo; the archive's own id is what the rewind is pointed at.
+   * A turn whose archive has since been pruned is left out: a card that offers
+   * Undo has to be able to perform it.
+   */
+  async checkpointTurns(sessionId: string): Promise<CheckpointTurnRow[]> {
+    const active = this.requireActive();
+    const rows: CheckpointTurnRow[] = [];
+    for (const row of active.store.turnCheckpoints(sessionId)) {
+      // An archive this workspace has already pruned is not an undo on offer.
+      const turn = await active.checkpoints.get(row.checkpointId);
+      if (turn) {
+        rows.push({
+          checkpointId: row.checkpointId,
+          prompt: row.prompt,
+          startedAt: turn.startedAt,
+          files: turn.entries.map((entry) => entry.path),
+        });
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * Give back what one turn changed. A turn in flight anywhere in the workspace
+   * is writing files this would step on, and a rewind of a turn nobody is
+   * waiting on cannot be undone itself, so it waits like the other operations
+   * that change what the next turn will read.
+   */
+  async revertCheckpoint(checkpointId: string, force?: boolean): Promise<RevertResult> {
+    const active = this.requireActive();
+    if (this.runs.size > 0) throw new Error('Cannot undo while a turn is running');
+    const report = await active.checkpoints.rewind(checkpointId, { force: force === true });
+    if (!report) throw new Error(`No undo archive is recorded for ${checkpointId}`);
+    return {
+      checkpointId: report.turn.id,
+      applied: report.applied,
+      changes: report.changes,
+      overwrittenBy: report.overwrittenBy,
+    };
   }
 
   openSession(id: string): {
@@ -418,13 +468,20 @@ export class WorkspaceController implements DesktopBackend {
         pricing: active.pricing,
         embedder: active.embedder,
         ctx: this.toolContext(active, sessionId, run),
+        checkpoints: active.checkpoints,
         abortSignal: run.abort.signal,
         onEvent: emit,
         onNote: (note) => this.send('agent:note', { sessionId, note }),
       });
 
       active.store.saveMessages(sessionId, result.messages);
-      active.store.addTurnUsage(sessionId, result.lines);
+      active.store.addTurnUsage(
+        sessionId,
+        result.lines,
+        // The prompt is kept with the archive because the transcript card that
+        // offers this undo is found by what it asked for, not by its position.
+        result.checkpointId ? { checkpointId: result.checkpointId, prompt } : undefined,
+      );
       // Only the session on screen moves the workspace's idea of "the session".
       if (active.session.id === sessionId)
         active.session = active.store.get(sessionId) ?? active.session;

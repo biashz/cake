@@ -1935,6 +1935,114 @@ body.is-resizing {
   padding-left: 0;
 }
 
+/* ---------------- the turn's own undo ---------------- */
+
+/* Quiet on purpose: the offer is a footnote to the turn, and only the words
+   that name the files are allowed to look like anything. */
+.turn-undo {
+  display: grid;
+  gap: 7px;
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--border);
+}
+
+.turn-undo-ask {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.turn-undo-files {
+  flex: none;
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  color: var(--text-soft);
+}
+
+.turn-undo-hint {
+  flex: 1 1 180px;
+  min-width: 0;
+  font-size: var(--fs-small);
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+.turn-undo-button {
+  flex: none;
+  height: 26px;
+  padding: 0 11px;
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-soft);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.turn-undo-button:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.turn-undo-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.turn-undone-tag {
+  flex: none;
+  font-size: var(--fs-label);
+  color: var(--ok);
+  white-space: nowrap;
+}
+
+.turn-undo-list {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 16px;
+  font-size: var(--fs-small);
+  color: var(--text-soft);
+  list-style: disc;
+}
+
+.turn-undo-action {
+  color: var(--text-soft);
+}
+
+.turn-undo-blocked,
+.turn-undo-error {
+  margin: 0;
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+.turn-undo-error {
+  color: var(--bad);
+}
+
+.turn-undo-caveat {
+  margin: 0;
+  font-size: var(--fs-label);
+  line-height: 1.4;
+  color: var(--text-soft);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .turn-undo-button {
+    transition:
+      color 120ms ease,
+      border-color 120ms ease,
+      background 120ms ease;
+  }
+}
+
 /* ---------------- tool calls ---------------- */
 
 .tool-group {

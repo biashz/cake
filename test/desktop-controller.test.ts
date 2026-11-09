@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { CheckpointStore } from '../src/core/checkpoints.js';
 import type { CostLine } from '../src/core/cost.js';
 import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_TURN } from '../src/core/images.js';
 import type { AgentEventEnvelope } from '../src/desktop/api.js';
@@ -638,6 +639,184 @@ describe('WorkspaceController fork and export', () => {
     expect(deep).toBe(join(cwd, 'notes', 'deep.md'));
     expect(existsSync(deep)).toBe(true);
     await ctrl.dispose();
+  });
+});
+
+describe('WorkspaceController undo', () => {
+  /** A controller pointed at the holding mock, in a workspace where writes are free. */
+  async function undoScenario(label: string) {
+    const mock = await startChatMock();
+    const home = tempDir(`${label}-home`);
+    const cwd = tempDir(`${label}-cwd`);
+    homes.push(home, cwd);
+    const ctrl = new WorkspaceController({
+      stateFile: join(home, 'state.json'),
+      send: () => {},
+      env: { ANTHROPIC_API_KEY: 'test-key', ANTHROPIC_BASE_URL: mock.url },
+      homeDir: home,
+    });
+    const init = await ctrl.openWorkspace(cwd);
+    await ctrl.setModel({ provider: 'anthropic', modelId: 'claude-sonnet-4-5' });
+    await ctrl.setMode('acceptEdits');
+    const sessionId = init.workspace?.sessionId;
+    if (!sessionId) throw new Error('opening a workspace did not give a session');
+    return { ctrl, cwd, mock, sessionId };
+  }
+
+  /** One model call that asks for a write, then the words that close the turn. */
+  async function writeThenFinish(
+    ctrl: WorkspaceController,
+    mock: Awaited<ReturnType<typeof undoScenario>>['mock'],
+    sessionId: string,
+    ask: string,
+    path: string,
+    content: string,
+  ) {
+    const run = ctrl.run(sessionId, ask);
+    await mock.arrived(mock.requests.length + 1);
+    mock.replyTool('write', { path, content });
+    await mock.arrived(mock.requests.length + 1);
+    mock.reply('written');
+    await run;
+  }
+
+  it('names the archive a turn closed, and hands the file back', async () => {
+    const { ctrl, cwd, mock, sessionId } = await undoScenario('undo');
+    try {
+      writeFileSync(join(cwd, 'a.ts'), 'before\n', 'utf8');
+      await writeThenFinish(ctrl, mock, sessionId, 'rewrite a.ts', 'a.ts', 'after\n');
+      expect(readFileSync(join(cwd, 'a.ts'), 'utf8')).toBe('after\n');
+
+      const rows = await ctrl.checkpointTurns(sessionId);
+      expect(rows).toHaveLength(1);
+      // The prompt travels with the archive: that is how a card finds its own undo.
+      expect(rows[0]).toMatchObject({ prompt: 'rewrite a.ts', files: ['a.ts'] });
+
+      const first = rows[0];
+      if (!first) throw new Error('the turn recorded no archive');
+      const result = await ctrl.revertCheckpoint(first.checkpointId);
+      expect(result.applied).toBe(true);
+      expect(result.changes).toEqual([{ path: 'a.ts', action: 'restored' }]);
+      expect(readFileSync(join(cwd, 'a.ts'), 'utf8')).toBe('before\n');
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('lists no undo for a turn that changed no file', async () => {
+    const { ctrl, mock, sessionId } = await undoScenario('undo-none');
+    try {
+      const run = ctrl.run(sessionId, 'say hello');
+      await mock.arrived(1);
+      mock.reply('hello');
+      await run;
+
+      expect(await ctrl.checkpointTurns(sessionId)).toEqual([]);
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('keeps each session’s undo list its own', async () => {
+    const { ctrl, cwd, mock, sessionId } = await undoScenario('undo-two');
+    try {
+      writeFileSync(join(cwd, 'a.ts'), 'before\n', 'utf8');
+      await writeThenFinish(ctrl, mock, sessionId, 'rewrite a.ts', 'a.ts', 'after\n');
+      const other = ctrl.newSession();
+
+      expect(await ctrl.checkpointTurns(other.session.id)).toEqual([]);
+      expect((await ctrl.checkpointTurns(sessionId)).map((row) => row.checkpointId)).toHaveLength(
+        1,
+      );
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('will not hand back files a later turn has changed, until asked to', async () => {
+    const { ctrl, cwd, mock, sessionId } = await undoScenario('undo-conflict');
+    try {
+      writeFileSync(join(cwd, 'a.ts'), 'one\n', 'utf8');
+      await writeThenFinish(ctrl, mock, sessionId, 'first', 'a.ts', 'two\n');
+      await writeThenFinish(ctrl, mock, sessionId, 'second', 'a.ts', 'three\n');
+
+      const rows = await ctrl.checkpointTurns(sessionId);
+      const oldest = rows[0];
+      const newer = rows[1];
+      if (!oldest || !newer) throw new Error('the two turns recorded no archives');
+
+      const blocked = await ctrl.revertCheckpoint(oldest.checkpointId);
+      expect(blocked.applied).toBe(false);
+      expect(blocked.overwrittenBy).toEqual([newer.checkpointId]);
+      // Refused means nothing moved.
+      expect(readFileSync(join(cwd, 'a.ts'), 'utf8')).toBe('three\n');
+
+      const forced = await ctrl.revertCheckpoint(oldest.checkpointId, true);
+      expect(forced.applied).toBe(true);
+      expect(readFileSync(join(cwd, 'a.ts'), 'utf8')).toBe('one\n');
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('waits for a turn in flight before it touches the files', async () => {
+    const { ctrl, cwd, mock, sessionId } = await undoScenario('undo-busy');
+    try {
+      writeFileSync(join(cwd, 'a.ts'), 'before\n', 'utf8');
+      await writeThenFinish(ctrl, mock, sessionId, 'rewrite a.ts', 'a.ts', 'after\n');
+      const rows = await ctrl.checkpointTurns(sessionId);
+      const first = rows[0];
+      if (!first) throw new Error('the turn recorded no archive');
+
+      const run = ctrl.run(sessionId, 'still working');
+      await mock.arrived(mock.requests.length + 1);
+      await expect(ctrl.revertCheckpoint(first.checkpointId)).rejects.toThrow(/running/);
+      expect(readFileSync(join(cwd, 'a.ts'), 'utf8')).toBe('after\n');
+
+      mock.reply('done');
+      await run;
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('says so when the archive it was pointed at is gone', async () => {
+    const { ctrl, mock, sessionId } = await undoScenario('undo-gone');
+    try {
+      await expect(ctrl.revertCheckpoint('0000000000000-deadbeef')).rejects.toThrow(
+        /no undo archive/i,
+      );
+      expect(await ctrl.checkpointTurns(sessionId)).toEqual([]);
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
+  });
+
+  it('takes an archive the workspace has pruned off the menu', async () => {
+    const { ctrl, cwd, mock, sessionId } = await undoScenario('undo-pruned');
+    try {
+      writeFileSync(join(cwd, 'a.ts'), 'before\n', 'utf8');
+      await writeThenFinish(ctrl, mock, sessionId, 'rewrite a.ts', 'a.ts', 'after\n');
+      const rows = await ctrl.checkpointTurns(sessionId);
+      const only = rows[0];
+      if (!only) throw new Error('the turn recorded no archive');
+
+      // The cap drops the oldest manifests; the link kept in the database survives them.
+      await CheckpointStore.forWorkspace(cwd, { keepTurns: 0 }).prune();
+
+      // A card that offers Undo has to be able to perform it, so the offer goes first.
+      expect(await ctrl.checkpointTurns(sessionId)).toEqual([]);
+      await expect(ctrl.revertCheckpoint(only.checkpointId)).rejects.toThrow(/no undo archive/i);
+    } finally {
+      await ctrl.dispose();
+      await mock.close();
+    }
   });
 });
 
