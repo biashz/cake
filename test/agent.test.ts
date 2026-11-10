@@ -25,7 +25,7 @@ function registryFor(model: MockLanguageModelV4): ProviderRegistry {
     defaultModelId: 'claude-sonnet-4-5',
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
     languageModel: () => model,
-    capabilities: () => ({ toolCalling: true, vision: false, maxContext: 200_000 }),
+    capabilities: () => ({ toolCalling: true, vision: false, maxContext: 200_000, assumed: false }),
   };
   return new ProviderRegistry().register(provider, 'test-key');
 }

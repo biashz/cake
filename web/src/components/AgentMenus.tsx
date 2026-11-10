@@ -5,6 +5,7 @@ import type {
   PermissionModeName,
   ProviderSummary,
 } from '../../../src/desktop/api.js';
+import { modelCapabilities } from '../../../src/providers/models.js';
 import { Icon } from './Icons';
 
 export const MODES: Array<{ id: PermissionModeName; label: string; hint: string }> = [
@@ -23,6 +24,21 @@ export const MODE_LABEL: Record<PermissionModeName, string> = {
 
 function keyEnv(providerId: string): string {
   return `${providerId.toUpperCase()}_API_KEY`;
+}
+
+/**
+ * What the model table says about the id in the box: the window a turn budgets
+ * against, whether a picture can go in with it, and the word for a row cake had
+ * to assume rather than look up. An empty box names no model, so it gets no claim.
+ */
+function modelHint(provider: ProviderSummary, asked: string): string {
+  const key = provider.hasKey ? 'key ready' : `set ${keyEnv(provider.id)}`;
+  if (!asked) return key;
+  const row = modelCapabilities(provider.id, asked);
+  const size = row.maxContext > 0 ? row.maxContext.toLocaleString() : 'unknown';
+  return `context ${size}${row.assumed ? ' (assumed)' : ''} · ${
+    row.vision ? 'images ok' : 'no images'
+  } · ${key}`;
 }
 
 const FOCUSABLE = 'button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -108,11 +124,11 @@ export function ModelMenu({
   const [providerId, setProviderId] = useState(init.model.provider);
   const [modelId, setModelId] = useState(init.model.modelId);
   const provider = init.providers.find((item) => item.id === providerId);
+  const asked = modelId.trim();
 
   const apply = () => {
-    const value = modelId.trim();
-    if (!value) return;
-    onSetModel({ provider: providerId, modelId: value });
+    if (!asked) return;
+    onSetModel({ provider: providerId, modelId: asked });
     onClose();
   };
 
@@ -158,19 +174,10 @@ export function ModelMenu({
         spellCheck={false}
         autoComplete="off"
       />
-      <p className="popover-hint mono">
-        {provider
-          ? `context ${provider.maxContext.toLocaleString()} · ${
-              provider.hasKey ? 'key ready' : `set ${keyEnv(provider.id)}`
-            }`
-          : 'Unknown provider'}
+      <p className="popover-hint mono" data-testid="model-hint">
+        {provider ? modelHint(provider, asked) : 'Unknown provider'}
       </p>
-      <button
-        type="button"
-        className="primary popover-submit"
-        onClick={apply}
-        disabled={!modelId.trim()}
-      >
+      <button type="button" className="primary popover-submit" onClick={apply} disabled={!asked}>
         Use model
       </button>
     </div>

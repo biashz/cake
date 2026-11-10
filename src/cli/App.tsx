@@ -69,6 +69,19 @@ function preview(value: unknown, max = 160): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+/**
+ * What cake believes about one model id, in the same words the turn budgets
+ * against: the window it reads and whether it thinks the model can see. The
+ * `assumed` mark is the table admitting it fell back to the provider's numbers.
+ */
+function modelNote(registry: ProviderRegistry, spec: ModelSpec): string {
+  const row = registry.get(spec.provider).capabilities(spec.modelId);
+  const size = row.maxContext > 0 ? row.maxContext.toLocaleString() : 'unknown';
+  return `context ${size}${row.assumed ? ' (assumed)' : ''} · ${
+    row.vision ? 'images ok' : 'no images'
+  }`;
+}
+
 export function App(props: AppProps) {
   const { registry, cwd, rules, system, store, pricing, checkpoints, embedder } = props;
   const mcpTools = props.mcpTools ?? [];
@@ -159,13 +172,19 @@ export function App(props: AppProps) {
       }
       case 'model': {
         if (!arg) {
-          addEntry({ role: 'info', text: `model: ${model.provider}/${model.modelId}` });
+          addEntry({
+            role: 'info',
+            text: `model: ${model.provider}/${model.modelId} · ${modelNote(registry, model)}`,
+          });
           return;
         }
         const next: ModelSpec = { ...model, modelId: arg };
         setModel(next);
         store.updateModel(session.id, next.provider, next.modelId);
-        addEntry({ role: 'info', text: `model → ${next.provider}/${next.modelId}` });
+        addEntry({
+          role: 'info',
+          text: `model → ${next.provider}/${next.modelId} · ${modelNote(registry, next)}`,
+        });
         return;
       }
       case 'mode': {

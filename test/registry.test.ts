@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createAnthropicProvider } from '../src/providers/anthropic.js';
 import { createDeepSeekProvider } from '../src/providers/deepseek.js';
+import { modelCapabilities } from '../src/providers/models.js';
+import { createOpenAIProvider } from '../src/providers/openai.js';
 import { createDefaultRegistry, ProviderRegistry } from '../src/providers/registry.js';
+import type { ModelProvider } from '../src/providers/types.js';
+import { DEFAULT_EMBEDDING_MODEL } from '../src/rag/embedder.js';
 
 describe('ProviderRegistry', () => {
   it('registers and lists providers', () => {
@@ -33,6 +37,7 @@ describe('createDeepSeekProvider', () => {
       toolCalling: true,
       vision: false,
       maxContext: 128_000,
+      assumed: false,
     });
   });
 
@@ -68,5 +73,45 @@ describe('createDefaultRegistry', () => {
       { ANTHROPIC_API_KEY: 'env-key' },
     );
     expect(registry.getApiKey('anthropic')).toBe('env-key');
+  });
+});
+
+describe('resolveEmbeddingModel', () => {
+  /** An embedder that names who answered, so a hand-off to the wrong vendor shows. */
+  function embeddingProvider(id: string): ModelProvider {
+    return {
+      id,
+      label: id,
+      defaultModelId: `${id}-chat`,
+      apiKeyEnvVar: `${id.toUpperCase()}_API_KEY`,
+      languageModel: () => `${id}:chat`,
+      embeddingModel: (modelId: string) => `${id}/${modelId}`,
+      capabilities: (modelId: string) => modelCapabilities(id, modelId),
+    };
+  }
+
+  it('asks the provider named rather than the first one that can embed', () => {
+    const registry = new ProviderRegistry()
+      .register(embeddingProvider('local'), 'local-key')
+      .register(embeddingProvider('other'), 'other-key');
+
+    expect(registry.resolveEmbeddingModel('other', 'vec-1')).toBe('other/vec-1');
+    expect(registry.resolveEmbeddingModel('local', 'vec-1')).toBe('local/vec-1');
+  });
+
+  it('does not let an earlier provider take the OpenAI embedding id', () => {
+    const registry = new ProviderRegistry()
+      .register(embeddingProvider('local'), 'local-key')
+      .register(createOpenAIProvider({ apiKey: 'o-key' }), 'o-key');
+
+    const model = registry.resolveEmbeddingModel('openai', DEFAULT_EMBEDDING_MODEL);
+    expect(model).toBeDefined();
+    expect(model).not.toBe(`local/${DEFAULT_EMBEDDING_MODEL}`);
+  });
+
+  it('says nothing rather than guessing, for a provider that cannot embed', () => {
+    const registry = new ProviderRegistry().register(createDeepSeekProvider({ apiKey: 'x' }));
+    expect(registry.resolveEmbeddingModel('deepseek', DEFAULT_EMBEDDING_MODEL)).toBeUndefined();
+    expect(registry.resolveEmbeddingModel('nowhere', DEFAULT_EMBEDDING_MODEL)).toBeUndefined();
   });
 });

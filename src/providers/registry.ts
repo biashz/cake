@@ -43,12 +43,15 @@ export class ProviderRegistry {
     return this.get(spec.provider).languageModel(spec.modelId);
   }
 
-  /** First registered provider that can embed with this model id. */
-  resolveEmbeddingModel(modelId: string): EmbeddingModel | undefined {
-    for (const provider of this.providers.values()) {
-      if (provider.embeddingModel) return provider.embeddingModel(modelId);
-    }
-    return undefined;
+  /**
+   * The embedding model a named provider serves, or undefined when that
+   * provider cannot embed. The id is never handed to whichever provider happens
+   * to be able to embed: registration order would then decide which vendor
+   * receives `text-embedding-3-small`.
+   */
+  resolveEmbeddingModel(providerId: ProviderId, modelId: string): EmbeddingModel | undefined {
+    const provider = this.providers.get(providerId);
+    return provider?.embeddingModel ? provider.embeddingModel(modelId) : undefined;
   }
 }
 
@@ -56,7 +59,8 @@ export class ProviderRegistry {
  * Build the default registry (DeepSeek + Anthropic + OpenAI) from resolved config.
  * API keys are resolved through {@link resolveApiKey} (explicit > env > config file)
  * and stored so the CLI can fail fast with an actionable message when a key is missing.
- * Registration order sets the fallback preference: DeepSeek first because it is the default.
+ * Registration order is the order surfaces list providers in: DeepSeek first
+ * because it is the default.
  */
 export function createDefaultRegistry(
   config: CakeConfig,

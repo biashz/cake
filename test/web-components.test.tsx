@@ -745,7 +745,6 @@ describe('Composer', () => {
         id: 'anthropic',
         label: 'Anthropic',
         defaultModelId: 'claude-sonnet-4-5',
-        maxContext: 200_000,
         hasKey: true,
       },
     ],
@@ -817,6 +816,72 @@ describe('Composer', () => {
     fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Choose permission mode' })).toBeNull();
     expect(document.activeElement).toBe(mode);
+  });
+
+  /**
+   * The menu's hint line after `id` is typed into the box. The window and the
+   * eyes are restated here rather than read back from the table, so a surface
+   * that stops asking the table for the id in front of the user is caught.
+   */
+  function hintTyped(id: string): string {
+    const trigger = withMenus();
+    trigger.focus();
+    fireEvent.click(trigger);
+    fireEvent.change(screen.getByLabelText('Model id'), { target: { value: id } });
+    return (screen.getByTestId('model-hint') as HTMLElement).textContent ?? '';
+  }
+
+  it('describes the id in the box, not the default it replaced', () => {
+    const hint = hintTyped('claude-3-haiku-20240307');
+    expect(hint).toContain(`context ${(200_000).toLocaleString()}`);
+    // The row above it in the table says this generation sees; this model does not.
+    expect(hint).toContain('no images');
+    expect(hint).not.toContain('assumed');
+    expect(hint).toContain('key ready');
+  });
+
+  it('says assumed when the table had to fall back', () => {
+    const hint = hintTyped('claude-nova-9');
+    expect(hint).toContain(`context ${(200_000).toLocaleString()} (assumed)`);
+    expect(hint).toContain('images ok');
+  });
+
+  it('claims nothing about a box with no id in it', () => {
+    const hint = hintTyped('   ');
+    expect(hint).not.toContain('context');
+    expect(hint).not.toContain('images');
+    expect(hint).toBe('key ready');
+  });
+
+  it('refuses to state a window for a provider the table does not list', () => {
+    const init = {
+      ...menuInit,
+      providers: [{ id: 'groq', label: 'Groq', defaultModelId: 'llama', hasKey: false }],
+      model: { provider: 'groq', modelId: 'llama' },
+    } as InitPayload;
+    render(
+      <Composer
+        value=""
+        running={false}
+        disabled={false}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        init={init}
+        onSetModel={vi.fn()}
+        onSetMode={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: /groq/ });
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const hint = (screen.getByTestId('model-hint') as HTMLElement).textContent ?? '';
+    expect(hint).toContain('context unknown');
+    expect(hint).toContain('no images');
+    expect(hint).toContain('assumed');
+    // And the key it is missing is named by the variable that holds it.
+    expect(hint).toContain('set GROQ_API_KEY');
   });
 
   /** A held composer is the only state where the reason has to be said. */

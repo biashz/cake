@@ -767,7 +767,6 @@ export class WorkspaceController implements DesktopBackend {
       id: provider.id,
       label: provider.label,
       defaultModelId: provider.defaultModelId,
-      maxContext: provider.capabilities(provider.defaultModelId).maxContext,
       hasKey: Boolean(this.registry.getApiKey(provider.id)),
     }));
   }

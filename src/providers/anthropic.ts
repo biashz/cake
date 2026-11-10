@@ -1,5 +1,6 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import type { LanguageModel } from 'ai';
+import { modelCapabilities } from './models.js';
 import type { ModelCapabilities, ModelProvider } from './types.js';
 
 export interface AnthropicAdapterSettings {
@@ -8,6 +9,7 @@ export interface AnthropicAdapterSettings {
   defaultModelId?: string;
 }
 
+const PROVIDER_ID = 'anthropic';
 const DEFAULT_MODEL = 'claude-sonnet-4-5';
 
 export function createAnthropicProvider(settings: AnthropicAdapterSettings = {}): ModelProvider {
@@ -18,7 +20,7 @@ export function createAnthropicProvider(settings: AnthropicAdapterSettings = {})
   const defaultModelId = settings.defaultModelId ?? DEFAULT_MODEL;
 
   return {
-    id: 'anthropic',
+    id: PROVIDER_ID,
     label: 'Anthropic',
     defaultModelId,
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
@@ -26,11 +28,7 @@ export function createAnthropicProvider(settings: AnthropicAdapterSettings = {})
       return client(modelId);
     },
     capabilities(modelId: string): ModelCapabilities {
-      return {
-        toolCalling: true,
-        vision: !modelId.startsWith('claude-3-haiku'),
-        maxContext: 200_000,
-      };
+      return modelCapabilities(PROVIDER_ID, modelId);
     },
   };
 }

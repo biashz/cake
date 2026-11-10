@@ -22,7 +22,6 @@ function bridge(overrides: { workspace: InitPayload['workspace']; asked: () => v
         id: 'anthropic',
         label: 'Anthropic',
         defaultModelId: 'claude-sonnet-4-5',
-        maxContext: 200_000,
         hasKey: true,
       },
     ],

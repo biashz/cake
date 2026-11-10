@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { createOpenAIProvider } from '../src/providers/openai.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
-import type { Embedder } from '../src/rag/embedder.js';
-import { buildBaseTools, buildToolCatalog } from '../src/runtime/toolset.js';
+import { DEFAULT_EMBEDDING_MODEL, type Embedder } from '../src/rag/embedder.js';
+import { buildBaseTools, buildToolCatalog, resolveEmbedder } from '../src/runtime/toolset.js';
 import type { CakeTool } from '../src/tools/types.js';
 
 const embedder: Embedder = {
@@ -57,5 +58,17 @@ describe('runtime toolset', () => {
     const catalog = buildToolCatalog(embedder, [mcpTool], agentOptions());
 
     expect(names(catalog)).toEqual([...names(base), 'agent']);
+  });
+});
+
+describe('resolveEmbedder', () => {
+  it('stays off when the provider that serves embeddings has no key', () => {
+    const registry = new ProviderRegistry().register(createOpenAIProvider({}));
+    expect(resolveEmbedder(registry)).toBeUndefined();
+  });
+
+  it('names the embedding model the index is keyed by', () => {
+    const registry = new ProviderRegistry().register(createOpenAIProvider({ apiKey: 'k' }), 'k');
+    expect(resolveEmbedder(registry)?.id).toBe(DEFAULT_EMBEDDING_MODEL);
   });
 });

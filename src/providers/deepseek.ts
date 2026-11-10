@@ -1,5 +1,6 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import type { LanguageModel } from 'ai';
+import { modelCapabilities } from './models.js';
 import type { ModelCapabilities, ModelProvider } from './types.js';
 
 export interface DeepSeekAdapterSettings {
@@ -8,6 +9,7 @@ export interface DeepSeekAdapterSettings {
   defaultModelId?: string;
 }
 
+const PROVIDER_ID = 'deepseek';
 const DEFAULT_MODEL = 'deepseek-chat';
 const DEFAULT_BASE_URL = 'https://api.deepseek.com';
 
@@ -19,7 +21,7 @@ export function createDeepSeekProvider(settings: DeepSeekAdapterSettings = {}): 
   const defaultModelId = settings.defaultModelId ?? DEFAULT_MODEL;
 
   return {
-    id: 'deepseek',
+    id: PROVIDER_ID,
     label: 'DeepSeek',
     defaultModelId,
     apiKeyEnvVar: 'DEEPSEEK_API_KEY',
@@ -29,11 +31,7 @@ export function createDeepSeekProvider(settings: DeepSeekAdapterSettings = {}): 
       return client.chat(modelId);
     },
     capabilities(modelId: string): ModelCapabilities {
-      return {
-        toolCalling: !modelId.includes('reasoner'),
-        vision: false,
-        maxContext: 128_000,
-      };
+      return modelCapabilities(PROVIDER_ID, modelId);
     },
   };
 }

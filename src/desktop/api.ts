@@ -47,11 +47,15 @@ export interface RulesPayload {
   conflicts: string[];
 }
 
+/**
+ * One registered provider, as the model menu lists it. The window and the eyes
+ * of the id in the box come from the model table, not from here, so nothing in
+ * this list states a number for a model it does not name.
+ */
 export interface ProviderSummary {
   id: string;
   label: string;
   defaultModelId: string;
-  maxContext: number;
   hasKey: boolean;
 }
 

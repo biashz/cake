@@ -3,7 +3,14 @@ import path from 'node:path';
 import type { ModelMessage } from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SessionMeta } from '../src/session/store.js';
-import { type CliScenario, cliScenario, echoModel } from './support/cli-app.js';
+import {
+  type CliScenario,
+  cliScenario,
+  echoModel,
+  NARROW_MODEL_ID,
+  NARROW_WINDOW,
+  WIDE_WINDOW,
+} from './support/cli-app.js';
 
 /**
  * The interactive command layer, driven through the keys a terminal sends.
@@ -73,12 +80,29 @@ describe('the interactive CLI commands', () => {
     const { app, store, props } = await mount();
 
     await app.submit('/model');
-    await app.waitFor('model: anthropic/claude-sonnet-4-5');
+    // The id it starts on is one the harness has no row for, so the window it
+    // quotes is the fallback and the line has to admit it.
+    await app.waitFor(
+      `model: anthropic/claude-sonnet-4-5 · context ${WIDE_WINDOW.toLocaleString()} (assumed) · images ok`,
+    );
 
     await app.submit('/model claude-opus-4-5');
     await app.waitFor('model → anthropic/claude-opus-4-5');
     // Switching only counts if the next `cake -c` comes back on this model.
     expect(store.get(props.session.id)?.model).toBe('claude-opus-4-5');
+  });
+
+  it('drops the admission for an id it has a row for, and quotes that row', async () => {
+    const { app } = await mount();
+
+    await app.submit(`/model ${NARROW_MODEL_ID}`);
+    await app.waitFor(
+      `model → anthropic/${NARROW_MODEL_ID} · context ${NARROW_WINDOW.toLocaleString()} · images ok`,
+    );
+    await settle();
+    // The line above is real only if the same screen does not also call it a
+    // guess: a listed id states its own numbers.
+    expect(app.frame()).not.toContain('assumed');
   });
 
   it('starts over on a fresh session row, leaving the old one behind', async () => {

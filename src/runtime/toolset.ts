@@ -9,7 +9,7 @@ import type { CakeTool } from '../tools/types.js';
 /** Embeddings come from OpenAI; semantic tools stay off when that key is absent. */
 export function resolveEmbedder(registry: ProviderRegistry): Embedder | undefined {
   if (!registry.getApiKey('openai')) return undefined;
-  const model = registry.resolveEmbeddingModel(DEFAULT_EMBEDDING_MODEL);
+  const model = registry.resolveEmbeddingModel('openai', DEFAULT_EMBEDDING_MODEL);
   return model ? createEmbedder(model) : undefined;
 }
 

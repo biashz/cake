@@ -1,5 +1,6 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import type { EmbeddingModel, LanguageModel } from 'ai';
+import { modelCapabilities } from './models.js';
 import type { ModelCapabilities, ModelProvider } from './types.js';
 
 export interface OpenAIAdapterSettings {
@@ -8,6 +9,7 @@ export interface OpenAIAdapterSettings {
   defaultModelId?: string;
 }
 
+const PROVIDER_ID = 'openai';
 const DEFAULT_MODEL = 'gpt-4o';
 
 export function createOpenAIProvider(settings: OpenAIAdapterSettings = {}): ModelProvider {
@@ -18,7 +20,7 @@ export function createOpenAIProvider(settings: OpenAIAdapterSettings = {}): Mode
   const defaultModelId = settings.defaultModelId ?? DEFAULT_MODEL;
 
   return {
-    id: 'openai',
+    id: PROVIDER_ID,
     label: 'OpenAI',
     defaultModelId,
     apiKeyEnvVar: 'OPENAI_API_KEY',
@@ -28,12 +30,8 @@ export function createOpenAIProvider(settings: OpenAIAdapterSettings = {}): Mode
     embeddingModel(modelId: string): EmbeddingModel {
       return client.embedding(modelId);
     },
-    capabilities(_modelId: string): ModelCapabilities {
-      return {
-        toolCalling: true,
-        vision: true,
-        maxContext: 128_000,
-      };
+    capabilities(modelId: string): ModelCapabilities {
+      return modelCapabilities(PROVIDER_ID, modelId);
     },
   };
 }

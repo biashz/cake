@@ -97,7 +97,6 @@ function fakeKernel(start: Record<string, Stored[]>): FakeKernel {
         id: 'anthropic',
         label: 'Anthropic',
         defaultModelId: 'claude-sonnet-4-5',
-        maxContext: 200_000,
         hasKey: true,
       },
     ],

@@ -18,6 +18,12 @@ export interface ModelCapabilities {
   vision: boolean;
   /** Approximate context window in tokens. */
   maxContext: number;
+  /**
+   * True when these numbers are the provider's baseline rather than a statement
+   * about this model id, so a surface can say it is guessing rather than pass
+   * a guess off as knowledge.
+   */
+  assumed: boolean;
 }
 
 /**

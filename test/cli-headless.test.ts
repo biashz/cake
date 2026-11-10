@@ -205,6 +205,7 @@ async function run(
       toolCalling: true,
       vision: true,
       maxContext: options.maxContext ?? 200_000,
+      assumed: false,
     }),
   };
   const registry = new ProviderRegistry().register(provider, 'test-key');

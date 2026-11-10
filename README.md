@@ -117,6 +117,7 @@ cake --doctor
 - 长参数截到 160 个字符并留一个 `…`，引用参数时跳过开头的空行，取第一条真有内容的行
 - 附件写在正文之外：`files: attached readme.md`、`files: not attached …missing.md`、`codebase: attached 1 chunk (alpha.ts:1)`；子代理报自己是谁、去做什么、花了多少：`↳ explore agent: find the parser` 与 `↳ explore done · 16 tokens · $0.0001`
 - plan 框只在有计划时出现。`plan · 1/3 done` 数的是做完的步，不是开始的步；`[x]` `[~]` `[ ]` 三个记号和 `task` 工具自己的回报、`/export` 导出的清单读同一张表，所以「屏幕说做完了、导出说没做完」这种分歧写不出来。`/clear` 后框跟着旧会话一起没，`/fork` 后框带着计划进新会话
+- `/model` 后面跟着一句注脚：`model: anthropic/claude-sonnet-4-5 · context 200,000 (assumed) · images ok`。窗口、能不能读图、以及这个窗口是查出来的还是猜的，三件事都在屏幕上；`/model <id>` 换过去时同一句跟着新 id 重算，换到表里建了行的 id，`(assumed)` 就消失
 
 ## 权限模型
 
@@ -161,6 +162,19 @@ cake --doctor
 支持的环境变量：`DEEPSEEK_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`CAKE_PROVIDER`、`CAKE_MODEL`、`DEEPSEEK_BASE_URL`、`ANTHROPIC_BASE_URL`、`OPENAI_BASE_URL`。密钥优先级：显式配置 > 环境变量 > 配置文件。
 
 > DeepSeek 走 OpenAI 兼容的 chat completions 协议（默认模型 `deepseek-chat`，支持工具调用）；`deepseek-reasoner` 不支持工具调用，agent 场景请用 `deepseek-chat`。接入本地或第三方兼容端点时，把 `providers.deepseek.baseURL` 或 `DEEPSEEK_BASE_URL` 指向对应地址即可。
+
+## 模型能力表
+
+cake 对一个 model id 能说什么，全写在 `src/providers/models.ts` 一张表里；三个 provider adapter 的 `capabilities()` 只是转发给它，屏幕上和内核里读到的数都出自这里。
+
+- 一行 = 一个 id 前缀族 + 三个数：`toolCalling` / `vision` / `maxContext`。**三个数都是 cake 自己的声称才建行**——只知道自己系列窗口的家族宁可让 id 落到基线，也不给一行半真半假的东西
+- 最长前缀赢：`claude-3-haiku-20240307` 读 `claude-3-haiku` 那一行（不能读图），而不是它那一代 `claude-3`
+- 表里没这个 id：拿该 provider 的基线窗口，并且带着 `assumed` 这个标记。基线不是秘密，所以界面把它念出来——桌面 model 菜单写 `context 200,000 (assumed)`，CLI 的 `/model` 写同一句。空着的输入框不声称任何数（它没指名模型）
+- 整张表没收录的 provider 什么都不说：`context unknown`，两个能力都记为否。这条今天是给第四个 adapter 准备的默认答案——`maxContext: 0` 只是「不报窗口」这个记号，不会成为压缩预算，因为压缩那一路只有注册过的 provider 会走到，而注册过的三个都在表里
+- 谁在读这两个数：`vision` 决定图片进不进这一轮（桌面 Attach 的禁用与内核发请求前的拒绝读同一处），`maxContext` 决定每一轮压到哪儿
+- `toolCalling` 目前没有任何读取方。它留在表里，因为它是这一列；真要按它路由，得先有消费者
+- 嵌入模型 id 交给**拥有它的那个 provider**（`text-embedding-3-small` 问 openai），不再是谁先注册谁接手——`@codebase` 的向量因此不会悄悄写进另一家的嵌入空间
+
 
 ## MCP
 
@@ -216,11 +230,11 @@ cake "@codebase 这个仓库在哪里处理 token 刷新？"
 
 - 上限只写在 `src/core/images.ts` 一处：一轮最多 4 张，单张解码后不超过 3 MB，格式限 PNG / JPEG / GIF / WebP
 - 桌面端可以粘贴、拖入，或点 Attach 选文件；图片先作为附件停在输入框里，发送时才随文字走 IPC。没有先说要看什么（正文为空）时 Send 保持不可用
-- 模型能不能读图由 provider 注册表判定：非视觉模型下 Attach 直接禁用（提示写在按钮 title 上），粘贴和拖入也不会进入这一轮；真要发的时候内核再拒绝一次
+- 模型能不能读图由那张模型能力表判定（见上文「模型能力表」）：非视觉模型下 Attach 直接禁用（提示写在按钮 title 上），粘贴和拖入也不会进入这一轮；真要发的时候内核再拒绝一次。表里没建行的 id 按 provider 基线算，Anthropic 的基线是「能读图」——这不是猜测的免责，注脚里那个 `(assumed)` 就是它说出口的方式
 - CLI 和桌面都能写 `@path/to/shot.png`：命中的图片按图片附加，而不是按文本展开。同一张图既粘贴又 `@` 只发一次
 - 拒绝发生在花钱之前：数量或大小超限、模型读不了图，都在发出请求之前抛错
 - 上下文占比把每张图按供应商给的单张上限估算（1600 token），并在界面上标明是估算
-- 渲染端不 import 内核运行时代码，接受类型在 `web/src/attachments.ts` 里另写一份；一条测试比较这两份表，多出来的格式想进来必须同时改两处
+- 渲染端只 import 内核里没有 IO 的那几个模块（`core/cost`、`core/plan`、`permissions/rules`、`providers/models`），所以注脚里的窗口和注脚外真正在用的预算出自同一张表，两者不可能各说一套；图片接受的类型在 `web/src/attachments.ts` 里另写一份，一条测试比较这两份表，多出来的格式想进来必须同时改两处
 
 ## 会话与观测
 
@@ -244,6 +258,7 @@ Electron 窗口是三栏布局：左侧会话栏（搜索 / 重命名 / 删除�
 - 会话切换读的是每个会话自己的缓冲：一个还在跑的会话保留它实时的 transcript（库里要到本轮结束才写入这一问一答，重读会把正在写的答案抹掉），空闲的会话才从库里重读。事件、note、审批请求按消息自带的会话 id 落到各自的缓冲；不带会话 id 的工作区级 note（比如重建索引）落在当时打开的那个会话里。输入框只被当前会话的这一轮挡住，后台有轮在跑时照样能发
 - 读屏软件听到的东西跟着界面上的规则走：transcript 是 `role="log"`（ polite），写完的一条才念，正在逐字流的文本标 `aria-live="off"`，不然每个 token 都是一句新话；审批卡和自己这轮的错误行是 `role="alert"`（一轮卡在等你答复，打断是对的）。看不见的会话由一个隐藏的 `role="status"` 区说话：`“Ticket s1” is waiting for your approval` / `has an answer` / `stopped with an error`——只在它转成这些状态时开口，你正在读的那个会话不重复说（它的记录一直在更新，切走也不会补报刚才看过的答案）
 - 输入框工具栏整合 provider/model 切换、权限模式与上下文占比（蛋糕切片仪表），模型与模式菜单向上展开
+- 模型菜单里那行注脚说的是**框里现在这个 id**：窗口多大、能不能读图、密钥有没有；表里没建行的 id 写成 `context 200,000 (assumed)`，框空着就只说密钥（它没指名任何模型，就不该有数）。这一行以前读的是 provider 默认模型的窗口——跟你在框里打的字无关，`ProviderSummary` 里那个字段已经删掉，界面无处可拿错
 - 只用键盘也走得完这条界面，每个弹层守同一条约定：打开时焦点进到面板里（不是停在触发它的那颗 chip 上），`Tab` 出不去、`↑↓` 在选项间绕圈走，`Esc` 关闭并把焦点还给打开它的那个控件——`Ctrl K` 面板、模型 / 模式菜单、最近工作区菜单都是这一套；面板自己关掉时若别人已经拿走焦点，就不抢回来。inspector 的五个标签是一个真 tablist：只有选中的那个进 Tab 序列，`←→` / `Home` / `End` 同时换选中和换焦点，面板用 `aria-labelledby` 指回选中的标签
 - 顶部保留命令面板、夜间 / 羊皮纸主题（默认羊皮纸浅色，选择会记住）与 inspector 开关
 - `Ctrl K` 命令面板，`Ctrl N` 新会话，`Ctrl B` 折叠会话栏，`Ctrl J` 折叠 inspector

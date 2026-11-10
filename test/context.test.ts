@@ -185,7 +185,12 @@ describe('createHistorySummarizer', () => {
       defaultModelId: 'm',
       apiKeyEnvVar: 'ANTHROPIC_API_KEY',
       languageModel: () => model,
-      capabilities: () => ({ toolCalling: true, vision: false, maxContext: 200_000 }),
+      capabilities: () => ({
+        toolCalling: true,
+        vision: false,
+        maxContext: 200_000,
+        assumed: false,
+      }),
     };
     const registry = new ProviderRegistry().register(provider, 'test-key');
     const summarize = createHistorySummarizer(registry, { provider: 'anthropic', modelId: 'm' });

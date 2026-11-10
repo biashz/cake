@@ -309,6 +309,9 @@ export async function cliScenario(
       toolCalling: true,
       vision: true,
       maxContext: MODEL_WINDOWS[modelId] ?? WIDE_WINDOW,
+      // The window this mock states for an id it does not list is the fallback,
+      // not a claim; `assumed` says so, and the surfaces print it.
+      assumed: !(modelId in MODEL_WINDOWS),
     }),
   };
   const registry = new ProviderRegistry().register(provider, 'test-key');
