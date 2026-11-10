@@ -449,6 +449,8 @@ export function Transcript({
   checkpoints,
   running,
   onUndo,
+  onChoosePrompt,
+  starterDisabled = false,
 }: {
   entries: Entry[];
   streaming: string;
@@ -457,6 +459,8 @@ export function Transcript({
   checkpoints: CheckpointTurnRow[];
   running: boolean;
   onUndo: (checkpointId: string, force: boolean) => Promise<RevertResult>;
+  onChoosePrompt?: (prompt: string) => void;
+  starterDisabled?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -529,17 +533,63 @@ export function Transcript({
         aria-live="polite"
       >
         {entries.length === 0 && streaming === '' && undos.unclaimed.length === 0 ? (
-          <div className="transcript-empty">
-            <span className="transcript-empty-mark" aria-hidden="true">
-              <Icon name="spark" size={20} />
+          <div className="transcript-empty conversation-start">
+            <span className="start-mark" aria-hidden="true">
+              <Icon name="layers" size={30} />
             </span>
-            {/* The same grammar every other empty panel uses: name the state, then say
-                what fills it. Without the first line this is only the placeholder
-                again, in a place no one can type into. */}
-            <p className="transcript-empty-title" data-testid="transcript-empty">
+            <p className="start-eyebrow" data-testid="transcript-empty">
               No turns yet.
             </p>
-            <p className="hint">Ask cake to change the code…</p>
+            <h2 className="start-title">What are we building?</h2>
+            <p className="start-description">
+              Describe a change, ask about your code, or start with a task below.
+            </p>
+            {onChoosePrompt ? (
+              <div className="starter-grid">
+                <button
+                  type="button"
+                  className="starter-card"
+                  disabled={starterDisabled}
+                  onClick={() =>
+                    onChoosePrompt(
+                      'Explore this project. Explain its architecture, key entry points, and how to run its tests. Do not modify files.',
+                    )
+                  }
+                >
+                  <Icon name="search" size={18} />
+                  <strong>Explore this project</strong>
+                  <span>Understand the code and where to start</span>
+                </button>
+                <button
+                  type="button"
+                  className="starter-card"
+                  disabled={starterDisabled}
+                  onClick={() =>
+                    onChoosePrompt(
+                      'Review the current code for bugs. Show concrete findings with file references and suggest focused fixes. Do not modify files yet.',
+                    )
+                  }
+                >
+                  <Icon name="check" size={18} />
+                  <strong>Review code</strong>
+                  <span>Find bugs before they reach production</span>
+                </button>
+                <button
+                  type="button"
+                  className="starter-card"
+                  disabled={starterDisabled}
+                  onClick={() =>
+                    onChoosePrompt(
+                      'Help me add tests. First identify important untested behavior and propose test cases before making changes.',
+                    )
+                  }
+                >
+                  <Icon name="terminal" size={18} />
+                  <strong>Add tests</strong>
+                  <span>Cover the behavior that matters</span>
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
         {turns.map((turn, position) => (

@@ -3,8 +3,8 @@ export type ThemeName = 'flour' | 'cocoa' | 'auto';
 export const THEME_ORDER: ThemeName[] = ['flour', 'cocoa', 'auto'];
 
 export const THEME_LABEL: Record<ThemeName, string> = {
-  flour: 'Flour',
-  cocoa: 'Cocoa',
+  flour: 'Light',
+  cocoa: 'Dark',
   auto: 'Follow system',
 };
 
@@ -22,7 +22,7 @@ const STORAGE_KEY = 'cake.ui.v2';
 /** Renamed to flour/cocoa in the Coupe redesign; older builds wrote this key. */
 const LEGACY_STORAGE_KEY = 'cake.ui.v1';
 
-const RAIL_DEFAULT = 280;
+const RAIL_DEFAULT = 248;
 const INSPECTOR_DEFAULT = 328;
 export const RAIL_RANGE: [number, number] = [200, 460];
 export const INSPECTOR_RANGE: [number, number] = [260, 560];

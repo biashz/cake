@@ -2,6 +2,7 @@ import type { SVGProps } from 'react';
 
 export type IconName =
   | 'plus'
+  | 'arrow-up'
   | 'folder'
   | 'search'
   | 'settings'
@@ -29,6 +30,7 @@ export type IconName =
 
 const PATHS: Record<IconName, string> = {
   plus: 'M12 5v14M5 12h14',
+  'arrow-up': 'M12 19V5M5 12l7-7 7 7',
   folder: 'M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z',
   search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14ZM20 20l-3.5-3.5',
   settings:

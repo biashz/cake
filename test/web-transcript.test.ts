@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CheckpointTurnRow } from '../src/desktop/api.js';
+import { collectChanges } from '../web/src/changes';
 import {
   addToolCall,
   attachToolResult,
@@ -264,6 +265,32 @@ describe('entriesFromMessages', () => {
       output: 'wrote a.ts',
     });
     expect(entries[3]?.text).toBe('done');
+  });
+
+  it.each([
+    { type: 'error-text', value: 'Permission denied: write' },
+    { type: 'error-json', value: { message: 'File is read-only' } },
+  ])('keeps stored $type results out of completed changes', (output) => {
+    const entries = entriesFromMessages([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'denied',
+            toolName: 'write',
+            input: { path: 'a.ts', content: 'not written' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'tool-result', toolCallId: 'denied', toolName: 'write', output }],
+      },
+    ]);
+    expect(entries[0]?.tool).toMatchObject({ status: 'error', error: stringifyOutput(output) });
+    expect(entries[0]?.tool?.output).toBeUndefined();
+    expect(collectChanges(entries)).toEqual([]);
   });
 
   it('still resolves history written without call ids', () => {

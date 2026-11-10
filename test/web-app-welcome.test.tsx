@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyCostBoard } from '../src/core/cost-board.js';
 import type { CakeApi, InitPayload } from '../src/desktop/api.js';
 import { App } from '../web/src/App';
@@ -128,6 +128,37 @@ async function boot(workspace: InitPayload['workspace']) {
 }
 
 describe('App before a folder is open', () => {
+  it('reopens a recent project through the real workspace action', async () => {
+    const api = bridge({ workspace: null, asked: vi.fn() });
+    const init = await api.init();
+    api.init = async () => ({ ...init, recents: ['/projects/cake'] });
+    api.openWorkspace = vi.fn(async () => init);
+    window.cake = api;
+    render(<App />);
+    await act(async () => {});
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /cake.*\/projects\/cake/ }));
+    });
+    expect(api.openWorkspace).toHaveBeenCalledWith('/projects/cake');
+  });
+
+  it('only interrupts the conversation for the selected provider missing a key', async () => {
+    const api = bridge({ workspace: { cwd: '/repo', sessionId: 's1' }, asked: vi.fn() });
+    const init = await api.init();
+    api.listSessions = async () => [];
+    api.init = async () => ({ ...init, missingKeys: ['openai'] });
+    window.cake = api;
+    const view = render(<App />);
+    await act(async () => {});
+    expect(screen.queryByText(/Add an API key/)).toBeNull();
+    view.unmount();
+    api.init = async () => ({ ...init, missingKeys: ['anthropic', 'openai'] });
+    render(<App />);
+    await act(async () => {});
+    expect(screen.getByText('Add an API key for Anthropic to start a conversation.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add a key' })).toBeTruthy();
+  });
+
   it('opens the welcome screen without asking for a session list', async () => {
     const asked = await boot(null);
 

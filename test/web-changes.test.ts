@@ -70,12 +70,26 @@ describe('collectChanges', () => {
     ]);
   });
 
-  it('keeps the latest status for a file', () => {
+  it('does not report pending or denied writes as completed changes', () => {
     const entries = [
       toolEntry(1, tool('write', { path: 'a.ts', content: 'x' }, 'running')),
-      toolEntry(2, tool('write', { path: 'a.ts', content: 'x' }, 'error')),
+      toolEntry(2, tool('write', { path: 'b.ts', content: 'x' }, 'error')),
     ];
-    expect(collectChanges(entries)[0]?.status).toBe('error');
+    expect(collectChanges(entries)).toEqual([]);
+    expect(changeStats(collectChanges(entries))).toEqual({ files: 0, adds: 0, removes: 0 });
+  });
+
+  it('preserves a completed edit when a later change is rejected', () => {
+    const entries = [
+      toolEntry(1, tool('write', { path: 'a.ts', content: 'kept' })),
+      toolEntry(
+        2,
+        tool('edit', { path: 'a.ts', old_string: 'kept', new_string: 'rejected' }, 'error'),
+      ),
+    ];
+    const [change] = collectChanges(entries);
+    expect(change).toMatchObject({ ops: 1, adds: 1, removes: 0, status: 'done' });
+    expect(change?.diff.lines).toEqual([{ type: 'add', text: 'kept' }]);
   });
 });
 

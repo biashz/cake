@@ -43,6 +43,8 @@ export function Composer({
   modeMenuSignal = 0,
   onSetModel,
   onSetMode,
+  onBrowseFiles,
+  onShowContext,
 }: {
   value: string;
   running: boolean;
@@ -63,6 +65,8 @@ export function Composer({
   modeMenuSignal?: number;
   onSetModel?: (model: ModelHandle) => void;
   onSetMode?: (mode: PermissionModeName) => void;
+  onBrowseFiles?: () => void;
+  onShowContext?: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -75,6 +79,7 @@ export function Composer({
   const [modeOpen, setModeOpen] = useState(false);
   const lastModelSignal = useRef(0);
   const lastModeSignal = useRef(0);
+  const lastFocusToken = useRef(0);
 
   const closeModel = () => setModelOpen(false);
   const closeMode = () => setModeOpen(false);
@@ -100,7 +105,8 @@ export function Composer({
   }, [running]);
 
   useEffect(() => {
-    if (focusToken === 0) return;
+    if (focusToken === 0 || focusToken === lastFocusToken.current) return;
+    lastFocusToken.current = focusToken;
     const node = textareaRef.current;
     if (!node) return;
     node.focus();
@@ -276,6 +282,7 @@ export function Composer({
           <textarea
             ref={textareaRef}
             data-testid="composer-input"
+            aria-label="Message cake"
             className="composer-input"
             value={value}
             rows={1}
@@ -295,6 +302,7 @@ export function Composer({
               onAttach?.(files);
             }}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
               if (suggest && suggest.items.length > 0) {
                 if (event.key === 'ArrowDown') {
                   event.preventDefault();
@@ -329,6 +337,18 @@ export function Composer({
 
         <div className="composer-toolbar">
           <div className="composer-controls">
+            {onBrowseFiles ? (
+              <button
+                type="button"
+                className="composer-chip composer-reference"
+                onClick={onBrowseFiles}
+                disabled={running || disabled}
+                title="Browse project files and add a reference"
+              >
+                <Icon name="plus" size={14} />
+                <span>Add context</span>
+              </button>
+            ) : null}
             {controls ? (
               <>
                 <div className="menu-anchor" ref={modelAnchor}>
@@ -415,13 +435,21 @@ export function Composer({
 
           <div className="composer-actions">
             {init ? (
-              <span className="composer-context">
+              <button
+                type="button"
+                className="composer-context"
+                onClick={onShowContext}
+                disabled={!onShowContext}
+                aria-label={`Context usage ${percent}%. Show context details`}
+                title="Show context usage and attached instructions"
+              >
                 <SliceStrip context={context} />
                 <span className="composer-context-value mono">{percent}%</span>
-              </span>
+              </button>
             ) : null}
             {running ? (
               <button type="button" className="stop" data-testid="composer-stop" onClick={onStop}>
+                <Icon name="stop" size={13} />
                 Stop
               </button>
             ) : (
@@ -438,6 +466,7 @@ export function Composer({
                       : undefined
                 }
               >
+                <Icon name="arrow-up" size={15} />
                 Send
               </button>
             )}

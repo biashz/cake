@@ -101,56 +101,59 @@ function streamState(map: Map<string, StreamState>, sessionId: string): StreamSt
 function Welcome({
   version,
   busy,
+  recents,
   onOpen,
+  onOpenRecent,
 }: {
   version: string;
   busy: boolean;
+  recents: string[];
   onOpen: () => void;
+  onOpenRecent: (path: string) => void;
 }) {
   return (
     <main className="welcome">
       <div className="welcome-inner">
-        <p className="welcome-eyebrow mono">desktop coding agent · v{version}</p>
-        <h1 className="welcome-brand">
+        <div className="brand-lockup">
+          <Icon name="layers" size={28} />
           <span className="brand-mark">cake</span>
-        </h1>
+          <span className="brand-version mono">v{version}</span>
+        </div>
+        <p className="welcome-eyebrow">Your code. Your workspace.</p>
+        <h1 className="welcome-heading">Let's build something.</h1>
         <p className="welcome-lede">
-          A small, sharp coding agent for your own machine. Open a folder, describe the change, and
-          approve the moments that matter.
+          Open a project to explore code, work through a change, and review the results together.
         </p>
         <div className="welcome-actions">
           <button type="button" className="primary big" onClick={onOpen} disabled={busy}>
             <Icon name="folder" size={16} />
             Open folder…
           </button>
-          <span className="welcome-hint mono">sessions stay local</span>
+          <span className="welcome-hint">Choose a project on your machine</span>
         </div>
-        <div className="welcome-grid">
-          <article className="welcome-card">
-            <span className="welcome-card-icon">
-              <Icon name="spark" size={16} />
-            </span>
-            <h2>Agent loop</h2>
-            <p>
-              Reads, searches, edits, and runs commands across multiple steps until the task is
-              done.
-            </p>
-          </article>
-          <article className="welcome-card">
-            <span className="welcome-card-icon">
-              <Icon name="check" size={16} />
-            </span>
-            <h2>Approvals</h2>
-            <p>Plan, default, accept edits, or YOLO. Writes and shell calls pause for your call.</p>
-          </article>
-          <article className="welcome-card">
-            <span className="welcome-card-icon">
-              <Icon name="panel" size={16} />
-            </span>
-            <h2>Context</h2>
-            <p>Project instructions, a codebase index, MCP tools, and a visible context budget.</p>
-          </article>
-        </div>
+        {recents.length > 0 ? (
+          <section className="welcome-projects" aria-label="Recent projects">
+            <h2>Recent projects</h2>
+            {recents.slice(0, 5).map((path) => (
+              <button
+                type="button"
+                className="welcome-project"
+                key={path}
+                onClick={() => onOpenRecent(path)}
+                disabled={busy}
+                title={path}
+              >
+                <Icon name="folder" size={17} />
+                <strong>{path.split(/[\\/]/).filter(Boolean).pop() ?? path}</strong>
+                <span className="mono">{path}</span>
+                <Icon name="chevron-right" size={14} />
+              </button>
+            ))}
+          </section>
+        ) : null}
+        <p className="welcome-foot">
+          Sessions stay on this device. Selected code and prompts are sent to your model provider.
+        </p>
       </div>
     </main>
   );
@@ -1526,30 +1529,41 @@ export function App() {
             <SessionHeader
               session={activeSession}
               cost={init.cost}
-              railOpen={prefs.railOpen}
-              inspectorOpen={prefs.inspectorOpen}
               theme={prefs.theme}
               onShowCost={() => {
                 openInspector('cost');
                 void refreshCost();
               }}
-              onToggleRail={toggleRail}
-              onToggleInspector={toggleInspector}
               onToggleTheme={toggleTheme}
               onOpenPalette={() => setPaletteOpen(true)}
             />
 
-            <HeatBar
-              running={running}
-              providerLabel={runProvider?.label ?? activeProvider?.label ?? init.model.provider}
-              modelId={runModel?.modelId ?? init.model.modelId}
-              mode={init.mode}
-              startedAt={startedAt}
-              costUsd={activeSession?.costUsd ?? 0}
-              tokens={activeSession?.totalTokens ?? 0}
-              unpriced={activeSession?.unpricedTokens ?? 0}
-              pendingApprovals={approvals.length}
-            />
+            {!showRail ? (
+              <button
+                type="button"
+                className="panel-restore is-left"
+                aria-label="Show sessions"
+                aria-controls="sessions-panel"
+                aria-expanded={false}
+                title="Show sessions (Ctrl B)"
+                onClick={toggleRail}
+              >
+                <Icon name="rail" size={16} />
+              </button>
+            ) : null}
+            {!showInspector ? (
+              <button
+                type="button"
+                className="panel-restore is-right"
+                aria-label="Show inspector"
+                aria-controls="inspector"
+                aria-expanded={false}
+                title="Show inspector (Ctrl J)"
+                onClick={toggleInspector}
+              >
+                <Icon name="panel" size={16} />
+              </button>
+            ) : null}
 
             {error ? (
               <div className="error-banner" role="alert">
@@ -1565,12 +1579,12 @@ export function App() {
               </div>
             ) : null}
 
-            {init.missingKeys.length > 0 ? (
+            {init.missingKeys.includes(init.model.provider) ? (
               <div className="notice mono">
                 <span className="notice-dot" />
                 <span>
-                  No API key for {init.missingKeys.join(', ')} — cake cannot call those models
-                  without one.
+                  Add an API key for {activeProvider?.label ?? init.model.provider} to start a
+                  conversation.
                 </span>
                 <button
                   type="button"
@@ -1600,6 +1614,11 @@ export function App() {
                 checkpoints={checkpoints}
                 running={running}
                 onUndo={undoTurn}
+                onChoosePrompt={(text) => {
+                  setPrompt((current) => (current.trim() ? `${current}\n\n${text}` : text));
+                  setFocusToken((current) => current + 1);
+                }}
+                starterDisabled={busy || running}
               />
 
               {approvals.length > 0 ? (
@@ -1633,8 +1652,21 @@ export function App() {
                 modeMenuSignal={modeMenuSignal}
                 onSetModel={(model) => void changeModel(model)}
                 onSetMode={(mode) => void changeMode(mode)}
+                onBrowseFiles={() => openInspector('files')}
+                onShowContext={() => openInspector('context')}
               />
             </main>
+            <HeatBar
+              running={running}
+              providerLabel={runProvider?.label ?? activeProvider?.label ?? init.model.provider}
+              modelId={runModel?.modelId ?? init.model.modelId}
+              mode={init.mode}
+              startedAt={startedAt}
+              costUsd={activeSession?.costUsd ?? 0}
+              tokens={activeSession?.totalTokens ?? 0}
+              unpriced={activeSession?.unpricedTokens ?? 0}
+              pendingApprovals={approvals.length}
+            />
           </>
         ) : (
           <>
@@ -1651,7 +1683,13 @@ export function App() {
                 </button>
               </div>
             ) : null}
-            <Welcome version={init.version} busy={busy} onOpen={() => void openWorkspace()} />
+            <Welcome
+              version={init.version}
+              busy={busy}
+              recents={init.recents}
+              onOpen={() => void openWorkspace()}
+              onOpenRecent={(path) => void openFolder(path)}
+            />
           </>
         )}
       </div>

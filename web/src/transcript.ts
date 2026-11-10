@@ -196,11 +196,13 @@ export function entriesFromMessages(messages: unknown[]): Entry[] {
           output?: unknown;
         };
         if (part.type !== 'tool-result') continue;
+        const outputType = (part.output as { type?: string } | null)?.type;
+        const failed = outputType === 'error-text' || outputType === 'error-json';
         entries = attachToolResult(
           entries,
           part.toolCallId ?? '',
           stringifyOutput(part.output),
-          'done',
+          failed ? 'error' : 'done',
           part.toolName ?? 'tool',
         );
       }

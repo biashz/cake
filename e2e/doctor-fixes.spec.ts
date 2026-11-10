@@ -33,6 +33,7 @@ test('doctor: a warning offers the fix, and the fix really lands', async () => {
   env.HOME = home;
   env.USERPROFILE = home;
   env.CAKE_USER_DATA = userData;
+  env.CAKE_PROVIDER = 'deepseek';
 
   const app = await electron.launch({ args: [mainEntry], env });
 
@@ -40,11 +41,13 @@ test('doctor: a warning offers the fix, and the fix really lands', async () => {
     const window = await app.firstWindow();
     await expect(window.getByTestId('composer-input')).toBeVisible({ timeout: 30_000 });
 
-    const notice = window.getByText(/No API key for/);
-    await expect(notice).toContainText('openai');
+    const notice = window.getByText(/Add an API key for/);
+    await expect(notice).toContainText('DeepSeek');
+    await expect(notice).not.toContainText('openai');
 
+    // A missing tab means the inspector is collapsed; restore it, never close it.
     if ((await window.getByRole('tab', { name: 'Context' }).count()) === 0) {
-      await window.getByRole('button', { name: 'Toggle inspector' }).click();
+      await window.getByRole('button', { name: 'Show inspector', exact: true }).click();
     }
     await window.getByRole('tab', { name: 'Context' }).click();
     await window.getByRole('button', { name: 'Run checks' }).click();

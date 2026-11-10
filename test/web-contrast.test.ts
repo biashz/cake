@@ -145,8 +145,13 @@ describe('contrast of the text the interface paints', () => {
     ['--muted', '--bg', 'secondary labels on the counter'],
     ['--muted', '--panel-2', 'secondary labels on a raised row'],
     ['--muted', '--panel-3', 'secondary labels on the deepest surface'],
-    ['--accent', '--panel', 'raspberry action text'],
-    ['--accent', '--bg', 'raspberry action text on the counter'],
+    ['--faint', '--bg', 'subtle labels on the workspace'],
+    ['--faint', '--bg-deep', 'subtle labels in the sidebar'],
+    ['--faint', '--panel', 'subtle labels in a panel'],
+    ['--faint', '--panel-2', 'subtle labels on a raised row'],
+    ['--faint', '--panel-3', 'subtle labels on the deepest surface'],
+    ['--accent', '--panel', 'primary action text'],
+    ['--accent', '--bg', 'primary action text on the workspace'],
     ['--accent-strong', '--panel', 'pressed action text'],
     ['--accent-ink', '--accent', 'text on a filled accent control'],
     ['--ok', '--panel', 'success text'],
@@ -180,10 +185,18 @@ describe('contrast of the text the interface paints', () => {
     }
   });
 
+  it('keeps input boundaries distinguishable from their surfaces', () => {
+    for (const [theme, map] of themes) {
+      for (const surface of ['--bg', '--bg-deep', '--panel', '--panel-2', '--panel-3']) {
+        expect(
+          ratio(map, '--input-border', surface),
+          `${theme}: input on ${surface}`,
+        ).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+
   it('keeps the truncated half of a file path readable', () => {
-    // The directory gives way in a narrow panel, which makes it the part people
-    // still have to be able to read. --faint is 3.70:1 on a raised row at the
-    // label size, so this text takes --muted and stays a step under the name.
     for (const [theme, map] of themes) {
       for (const surface of ['--panel', '--panel-2']) {
         expect(

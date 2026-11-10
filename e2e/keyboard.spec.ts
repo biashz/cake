@@ -64,8 +64,9 @@ test('the keyboard gets in and out of every popover, tablist, and the palette', 
     await expect(window.getByRole('dialog', { name: 'Choose model' })).toHaveCount(0);
     expect((await focusState(window)).title).toBe('Switch provider and model');
 
+    // A missing tab means the inspector is collapsed; restore it, never close it.
     if ((await window.getByRole('tab', { name: 'Cost' }).count()) === 0) {
-      await window.getByRole('button', { name: 'Toggle inspector' }).click();
+      await window.getByRole('button', { name: 'Show inspector', exact: true }).click();
     }
     const active = window.getByRole('tab', { selected: true });
     await active.focus();

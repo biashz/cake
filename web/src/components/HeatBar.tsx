@@ -15,11 +15,6 @@ function elapsed(since: number): string {
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
 }
 
-/**
- * The oven read-out: what is running, on which model, under which permission
- * mode, for how long, and what it has cost. Controls stay in the composer so no
- * action ever appears twice.
- */
 export function HeatBar({
   running,
   providerLabel,
@@ -49,10 +44,10 @@ export function HeatBar({
     return () => clearInterval(timer);
   }, [running, startedAt]);
 
-  const state = running ? 'Cooking' : pendingApprovals > 0 ? 'Waiting for you' : 'Idle';
+  const state = pendingApprovals > 0 ? 'Waiting for approval' : running ? 'Working' : 'Ready';
 
   return (
-    <footer className={`heat${running ? ' is-hot' : ''}`}>
+    <footer className={`heat${running && pendingApprovals === 0 ? ' is-hot' : ''}`}>
       <span className="sr-only">Run status</span>
       <span className="heat-pulse" aria-hidden="true" />
       <strong className="heat-state">{state}</strong>

@@ -149,9 +149,10 @@ export function Sidebar({
   };
 
   return (
-    <aside className="rail" aria-label="Sessions">
+    <aside className="rail" id="sessions-panel" aria-label="Sessions">
       <div className="rail-brand">
         <div className="brand-lockup">
+          <Icon name="layers" size={21} />
           <span className="brand-mark">cake</span>
           <span className="brand-version mono">v{version}</span>
         </div>
@@ -160,6 +161,9 @@ export function Sidebar({
             type="button"
             className="icon-button"
             aria-label="Hide sessions"
+            title="Hide sessions (Ctrl B)"
+            aria-controls="sessions-panel"
+            aria-expanded={true}
             onClick={onClose}
           >
             <Icon name="x" />

@@ -8,28 +8,20 @@ const NEXT_ICON: Record<ThemeName, IconName> = { flour: 'sun', cocoa: 'moon', au
 export function SessionHeader({
   session,
   cost,
-  railOpen,
-  inspectorOpen,
   theme,
   onShowCost,
-  onToggleRail,
-  onToggleInspector,
   onToggleTheme,
   onOpenPalette,
 }: {
   session: SessionInfo | null;
   cost: CostPayload;
-  railOpen: boolean;
-  inspectorOpen: boolean;
   theme: ThemeName;
   onShowCost: () => void;
-  onToggleRail: () => void;
-  onToggleInspector: () => void;
   onToggleTheme: () => void;
   onOpenPalette: () => void;
 }) {
-  const title = session?.title || 'Untitled session';
-  // The session row holds the spend; the board says how much of it no rate covers.
+  const title = session?.title || 'New session';
+  const folder = session?.cwd.split(/[\\/]/).filter(Boolean).pop();
   const spend = spendLabel(
     cost.rollup?.costUsd ?? session?.costUsd ?? 0,
     cost.board?.totals.unpricedTokens ?? 0,
@@ -39,27 +31,16 @@ export function SessionHeader({
   return (
     <header className="session-header">
       <div className="header-leading">
-        {!railOpen ? <span className="brand-mark header-brand">cake</span> : null}
-        {!railOpen ? (
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Show sessions"
-            onClick={onToggleRail}
-          >
-            <Icon name="rail" />
-          </button>
-        ) : null}
+        <Icon name="terminal" size={17} />
         <div className="session-heading">
           <h1 className="header-title" title={title}>
             {title}
           </h1>
-          <p className="session-context mono" title={session?.cwd}>
-            {session?.cwd ?? 'No session'}
+          <p className="session-context" title={session?.cwd}>
+            {folder ?? 'Workspace'} <span aria-hidden="true">/</span> Local session
           </p>
         </div>
       </div>
-
       <div className="header-actions">
         <button
           type="button"
@@ -72,7 +53,6 @@ export function SessionHeader({
           <span>{spend}</span>
           <span className="cost-chip-tokens">{tokens}</span>
         </button>
-
         <button
           type="button"
           className="icon-button"
@@ -90,15 +70,6 @@ export function SessionHeader({
           onClick={onToggleTheme}
         >
           <Icon name={NEXT_ICON[nextTheme(theme)]} />
-        </button>
-        <button
-          type="button"
-          className={`icon-button${inspectorOpen ? ' is-active' : ''}`}
-          aria-label="Toggle inspector"
-          title="Toggle inspector (Ctrl J)"
-          onClick={onToggleInspector}
-        >
-          <Icon name="panel" />
         </button>
       </div>
     </header>

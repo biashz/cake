@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { diffForTool } from '../changes';
 import { cap, type DiffLine, type DiffResult, fitHunks } from '../diff';
 import { type AgentRun, stringifyOutput, summarizeInput, type ToolInfo } from '../transcript';
+import { Icon } from './Icons';
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}\n… [truncated]` : text;
@@ -75,7 +76,12 @@ export function ToolCard({ tool, index }: { tool: ToolInfo; index?: number }) {
 
   return (
     <div className={`tool-card tool-${tool.status}`} data-testid="tool-card">
-      <button type="button" className="tool-head" onClick={() => setOpen((value) => !value)}>
+      <button
+        type="button"
+        className="tool-head"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
         {index !== undefined ? (
           <span className="tool-seq mono" aria-hidden="true">
             {String(index).padStart(2, '0')}
@@ -86,17 +92,25 @@ export function ToolCard({ tool, index }: { tool: ToolInfo; index?: number }) {
         </span>
         <span className="tool-name mono">{tool.name}</span>
         <span className="tool-target">{summarizeInput(tool.input)}</span>
+        {diff.lines.length > 0 ? (
+          <span className="tool-diff-summary mono">
+            <span className="diff-count-add">+{diff.adds}</span>{' '}
+            <span className="diff-count-remove">−{diff.removes}</span>
+          </span>
+        ) : null}
         <span className="tool-state">
           {tool.status === 'running' ? 'running…' : tool.status === 'error' ? 'failed' : 'done'}
         </span>
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} className="tool-chevron" />
       </button>
 
       {tool.agent ? <AgentBranch agent={tool.agent} /> : null}
-
-      {diff.lines.length > 0 ? <DiffView diff={diff} /> : null}
-
+      {tool.error && !open ? (
+        <p className="tool-error-summary error-text">{truncate(tool.error, 240)}</p>
+      ) : null}
       {open ? (
         <div className="tool-detail">
+          {diff.lines.length > 0 ? <DiffView diff={diff} /> : null}
           <div className="detail-label">input</div>
           <pre>{truncate(JSON.stringify(tool.input, null, 2) ?? '', 4000)}</pre>
           {tool.error !== undefined ? (

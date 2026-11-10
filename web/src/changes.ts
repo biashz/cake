@@ -40,7 +40,7 @@ function pathFor(tool: ToolInfo): string | undefined {
 export function collectChanges(entries: Entry[]): FileChange[] {
   const byPath = new Map<string, FileChange>();
   for (const entry of entries) {
-    if (entry.role !== 'tool' || !entry.tool) continue;
+    if (entry.role !== 'tool' || !entry.tool || entry.tool.status !== 'done') continue;
     const path = pathFor(entry.tool);
     const diff = diffForTool(entry.tool);
     if (!path || diff.lines.length === 0) continue;

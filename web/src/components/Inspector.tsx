@@ -679,6 +679,9 @@ function ChangesPanel({ changes }: { changes: FileChange[] }) {
         <span className="diff-count-add">+{stats.adds}</span>{' '}
         <span className="diff-count-remove">−{stats.removes}</span>
       </p>
+      <p className="inspect-hint">
+        Successful edits in this session. Counts reflect tool inputs, not a Git diff.
+      </p>
       <div className="change-list">
         {changes.map((change) => {
           const open = expanded === change.path;
@@ -1367,7 +1370,7 @@ export function Inspector({
   );
 
   return (
-    <aside className="inspector" aria-label="Inspector">
+    <aside className="inspector" id="inspector" aria-label="Inspector">
       <div className="inspector-head">
         <div
           className="tab-list"
@@ -1426,7 +1429,9 @@ export function Inspector({
           type="button"
           className="icon-button"
           aria-label="Hide inspector"
-          title="Hide inspector"
+          title="Hide inspector (Ctrl J)"
+          aria-controls="inspector"
+          aria-expanded={true}
           onClick={onClose}
         >
           <Icon name="x" size={14} />

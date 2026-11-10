@@ -62,8 +62,9 @@ test('MCP manager: add, switch off, edit, fail loudly, remove', async () => {
     const window = await app.firstWindow();
     await expect(window.getByTestId('composer-input')).toBeVisible({ timeout: 30_000 });
 
+    // A missing tab means the inspector is collapsed; restore it, never close it.
     if ((await window.getByRole('tab', { name: 'Context' }).count()) === 0) {
-      await window.getByRole('button', { name: 'Toggle inspector' }).click();
+      await window.getByRole('button', { name: 'Show inspector', exact: true }).click();
     }
     await window.getByRole('tab', { name: 'Context' }).click();
 

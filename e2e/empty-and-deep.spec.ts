@@ -51,7 +51,7 @@ test('an empty centre names itself, and a deep path gives way in the directory',
     const empty = window.getByTestId('transcript-empty');
     await expect(empty).toBeVisible();
     await expect(empty).toHaveText('No turns yet.');
-    await expect(window.getByText('Ask cake to change the code…')).toBeVisible();
+    await expect(window.getByRole('heading', { name: 'What are we building?' })).toBeVisible();
 
     await window.getByRole('tab', { name: 'Files' }).click();
     const row = window.locator('.file-row');
@@ -104,9 +104,7 @@ test('an empty centre names itself, and a deep path gives way in the directory',
     expect(room.name).toBe('Inspector.tsx');
     expect(room.dirGaveWay).toBe(true);
     expect(room.nameRight).toBeLessThanOrEqual(room.rowRight);
-    // 10.5px text, so AA asks 4.5:1 of both halves. Truncation is not a reason to
-    // paint a path lighter than a person can read.
-    expect(room.labelSize).toBe('10.5px');
+    expect(room.labelSize).toBe('12px');
     expect(room.dirContrast, 'directory half').toBeGreaterThanOrEqual(4.5);
     expect(room.nameContrast, 'name half').toBeGreaterThanOrEqual(4.5);
   } finally {

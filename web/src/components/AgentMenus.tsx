@@ -12,7 +12,7 @@ export const MODES: Array<{ id: PermissionModeName; label: string; hint: string 
   { id: 'plan', label: 'Plan', hint: 'Reads and searches only; no writes or shell.' },
   { id: 'default', label: 'Default', hint: 'Reads run freely; writes and shell ask first.' },
   { id: 'acceptEdits', label: 'Accept edits', hint: 'Writes run freely; shell still asks.' },
-  { id: 'yolo', label: 'YOLO', hint: 'Every tool call runs without asking.' },
+  { id: 'yolo', label: 'YOLO', hint: 'Runs tools automatically; dangerous actions still ask.' },
 ];
 
 export const MODE_LABEL: Record<PermissionModeName, string> = {

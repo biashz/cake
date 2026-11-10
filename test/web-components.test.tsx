@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildCostBoard, type CostRow, emptyCostBoard } from '../src/core/cost-board.js';
 import type {
@@ -63,15 +64,22 @@ describe('ToolCard', () => {
       />,
     );
 
+    const toggle = screen.getByRole('button', { name: /edit/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('+1');
+    expect(toggle.textContent).toContain('−1');
+    expect(screen.queryByTestId('diff')).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const diff = screen.getByTestId('diff');
     expect(diff.textContent).toContain('-old line');
     expect(diff.textContent).toContain('+new line');
     expect(diff.textContent).toContain('@1');
     expect(diff.textContent).toContain('+1');
-    expect(screen.queryByText('input')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /edit/ }));
     expect(screen.getByText('input')).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(screen.queryByText('input')).toBeNull();
+    expect(screen.queryByTestId('diff')).toBeNull();
   });
 
   it('collapses a hunk without losing its counts', () => {
@@ -86,6 +94,7 @@ describe('ToolCard', () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole('button', { name: /edit/ }));
     const head = screen.getByRole('button', { name: /@1/ });
     fireEvent.click(head);
     expect(screen.queryByText('two')).toBeNull();
@@ -558,7 +567,81 @@ function attached(dataUrl: string, label: string): Attachment {
   return { dataUrl, label };
 }
 
+function ComposerDraft({ focusToken }: { focusToken: number }) {
+  const [value, setValue] = useState('hello world');
+  return (
+    <Composer
+      value={value}
+      focusToken={focusToken}
+      onChange={setValue}
+      running={false}
+      disabled={false}
+      onSubmit={vi.fn()}
+      onStop={vi.fn()}
+    />
+  );
+}
+
 describe('Composer', () => {
+  it('positions a requested focus once without moving the caret on later edits', () => {
+    const view = render(<ComposerDraft focusToken={1} />);
+    const input = screen.getByRole('textbox', { name: 'Message cake' }) as HTMLTextAreaElement;
+    expect(input.selectionStart).toBe(11);
+    fireEvent.change(input, {
+      target: { value: 'hello Xworld', selectionStart: 7, selectionEnd: 7 },
+    });
+    expect(input.selectionStart).toBe(7);
+    view.rerender(<ComposerDraft focusToken={2} />);
+    expect(input.selectionStart).toBe(12);
+  });
+
+  it('keeps IME confirmation and Shift Enter out of submission', () => {
+    const onSubmit = vi.fn();
+    render(
+      <Composer
+        value="检查代码"
+        running={false}
+        disabled={false}
+        onChange={vi.fn()}
+        onSubmit={onSubmit}
+        onStop={vi.fn()}
+      />,
+    );
+    const input = screen.getByRole('textbox', { name: 'Message cake' });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens file references and context details without submitting a message', () => {
+    const onBrowseFiles = vi.fn();
+    const onShowContext = vi.fn();
+    const onSubmit = vi.fn();
+    const props = {
+      value: 'keep my draft',
+      running: false,
+      disabled: false,
+      onChange: vi.fn(),
+      onSubmit,
+      onStop: vi.fn(),
+      init: composerInit(),
+      onBrowseFiles,
+      onShowContext,
+    };
+    const { rerender } = render(<Composer {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add context' }));
+    fireEvent.click(screen.getByRole('button', { name: /Show context details/ }));
+    expect(onBrowseFiles).toHaveBeenCalledTimes(1);
+    expect(onShowContext).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+    rerender(<Composer {...props} running />);
+    expect(screen.getByRole('button', { name: 'Add context' }).hasAttribute('disabled')).toBe(true);
+    rerender(<Composer {...props} disabled />);
+    expect(screen.getByRole('button', { name: 'Add context' }).hasAttribute('disabled')).toBe(true);
+  });
+
   it('submits, stops, and reports edits', () => {
     const onChange = vi.fn();
     const onSubmit = vi.fn();
@@ -933,6 +1016,29 @@ describe('Composer', () => {
 });
 
 describe('Transcript', () => {
+  it('offers actionable starting drafts only while the conversation is empty', () => {
+    const choose = vi.fn();
+    const props = {
+      entries: [] as Entry[],
+      streaming: '',
+      onInsertFile: vi.fn(),
+      ...noUndo,
+      onChoosePrompt: choose,
+    };
+    const { rerender } = render(<Transcript {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: /Explore this project/ }));
+    expect(choose).toHaveBeenCalledWith(expect.stringContaining('Do not modify files.'));
+    fireEvent.click(screen.getByRole('button', { name: /Review code/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Add tests/ }));
+    expect(choose).toHaveBeenCalledTimes(3);
+    rerender(<Transcript {...props} starterDisabled />);
+    expect(
+      screen.getByRole('button', { name: /Explore this project/ }).hasAttribute('disabled'),
+    ).toBe(true);
+    rerender(<Transcript {...props} entries={[{ id: 1, role: 'user', text: 'Hello' }]} />);
+    expect(screen.queryByRole('button', { name: /Explore this project/ })).toBeNull();
+  });
+
   it('renders messages, markdown, meta, errors, and the live stream', () => {
     render(
       <Transcript
@@ -1196,7 +1302,8 @@ describe('Transcript', () => {
     expect(screen.getByTestId('transcript-empty').textContent).toBe('No turns yet.');
     // The invitation stays, but now it answers a named state rather than standing in
     // for the input box's own text in a place you cannot type.
-    expect(screen.getByText('Ask cake to change the code…')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'What are we building?' })).toBeTruthy();
+    expect(screen.getByText(/Describe a change, ask about your code/)).toBeTruthy();
   });
 });
 
@@ -1591,12 +1698,8 @@ describe('Spend read-outs outside the board', () => {
       <SessionHeader
         session={session}
         cost={cost({ board: buildCostBoard([row()]) })}
-        railOpen
-        inspectorOpen
         theme="flour"
         onShowCost={onShowCost}
-        onToggleRail={vi.fn()}
-        onToggleInspector={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenPalette={vi.fn()}
       />,
@@ -1617,18 +1720,47 @@ describe('Spend read-outs outside the board', () => {
           board: buildCostBoard([row(), row({ turn: 2, priced: true, costUsd: 0.0042 })]),
           rollup: { costUsd: 0.0042, totalTokens: 2_400 },
         })}
-        railOpen
-        inspectorOpen
         theme="flour"
         onShowCost={vi.fn()}
-        onToggleRail={vi.fn()}
-        onToggleInspector={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenPalette={vi.fn()}
       />,
     );
 
     expect(screen.getByTestId('cost-chip').textContent).toContain('$0.0042 + unpriced');
+  });
+
+  it('reports approval waiting instead of working while a turn is blocked', () => {
+    const { rerender } = render(
+      <HeatBar
+        running
+        providerLabel="Anthropic"
+        modelId="claude-test"
+        mode="default"
+        startedAt={Date.now()}
+        costUsd={0}
+        tokens={0}
+        unpriced={0}
+        pendingApprovals={1}
+      />,
+    );
+    expect(screen.getByText('Waiting for approval')).toBeTruthy();
+    expect(screen.queryByText('Working')).toBeNull();
+    expect(document.querySelector('.heat.is-hot')).toBeNull();
+    rerender(
+      <HeatBar
+        running
+        providerLabel="Anthropic"
+        modelId="claude-test"
+        mode="default"
+        startedAt={Date.now()}
+        costUsd={0}
+        tokens={0}
+        unpriced={0}
+        pendingApprovals={0}
+      />,
+    );
+    expect(screen.getByText('Working')).toBeTruthy();
   });
 
   it('reads the run-out as unknown for a model with no rate', () => {
