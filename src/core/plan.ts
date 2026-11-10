@@ -1,4 +1,15 @@
-import type { TaskItem } from '../tools/types.js';
+import type { TaskItem, TaskStatus } from '../tools/types.js';
+
+/**
+ * The one mark table. The box on the terminal, the `task` tool's own report and
+ * the exported transcript all quote the same list, so they cannot quietly start
+ * saying different things about the same step.
+ */
+export const TASK_MARKS: Record<TaskStatus, string> = {
+  pending: '[ ]',
+  in_progress: '[~]',
+  completed: '[x]',
+};
 
 export interface PlanProgress {
   done: number;

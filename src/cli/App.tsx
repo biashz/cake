@@ -5,7 +5,7 @@ import type { CheckpointStore } from '../core/checkpoints.js';
 import { formatCost, spendLabel, unpricedTokens } from '../core/cost.js';
 import { buildCostBoard } from '../core/cost-board.js';
 import type { AgentEvent } from '../core/events.js';
-import { planProgress } from '../core/plan.js';
+import { planProgress, TASK_MARKS } from '../core/plan.js';
 import type { PricingOverrides } from '../core/pricing.js';
 import { createTrace } from '../observability/trace.js';
 import { MODE_NAMES, modeHelp, parsePermissionMode } from '../permissions/modes.js';
@@ -23,7 +23,6 @@ import type {
   PermissionMode,
   PermissionRequest,
   TaskItem,
-  TaskStatus,
   ToolContext,
 } from '../tools/types.js';
 import { commandHelp } from './commands.js';
@@ -63,12 +62,6 @@ export interface AppProps {
   embedder?: Embedder;
   mcpTools?: CakeTool[];
 }
-
-const PLAN_MARKS: Record<TaskStatus, string> = {
-  pending: '[ ]',
-  in_progress: '[~]',
-  completed: '[x]',
-};
 
 function preview(value: unknown, max = 160): string {
   const raw = typeof value === 'string' ? value : JSON.stringify(value ?? '');
@@ -525,7 +518,7 @@ export function App(props: AppProps) {
               color={task.status === 'in_progress' ? 'yellow' : undefined}
               dimColor={task.status === 'completed'}
             >
-              {`${PLAN_MARKS[task.status]} ${task.id}. ${task.subject}`}
+              {`${TASK_MARKS[task.status]} ${task.id}. ${task.subject}`}
             </Text>
           ))}
         </Box>

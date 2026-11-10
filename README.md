@@ -107,6 +107,17 @@ cake --doctor
 - `/mode <name>` 在不必重启的前提下换权限模式，屏幕顶部那行 `mode=` 就是这一轮真正生效的那个；名字不在四个里就报出来并维持原样，猜你想按哪个模式打字错误比原地不动更糟。模式不写进会话那一行——下次启动仍按 `--permission-mode`（或 `-y`）来，`cake -c` 不会替你记住上一轮按过 `yolo`
 - 一轮正在跑的时候键盘不接单：这时敲的字符不进队列、也不提示丢了，屏幕右下角的 `(working… Ctrl+C to cancel)` 消失之后重新敲才算数（桌面端的输入框没有这个限制，它按会话分屏）
 
+### 交互终端在屏幕上说什么
+
+上面那些键之所以值得按，是因为卡片把该说的说全了。下面每一行都由测试从画面里读出来核对，改一个字就会被抓住：
+
+- 审批卡三行加落款：`approval write (write) → notes.txt (8 chars)` 说谁在问、问的是哪一类、要动的是什么；`notes.txt · +1 −1` 说这次改动有多大（shell 调用没有预览，那一行就整行不出现，不写 `change · +0 −0`）；`danger: sensitive credential file` 说危险在哪（普通写入没有这一行，卡片不凭空喊危险）。落款 `[y/Enter] allow · [n/Esc] deny` 写的键就是真的能按的键
+- `yolo` 下普通调用一张卡都不出，看着像破坏性的调用照样出卡
+- transcript 一件事一行：`→ write` 是发出去，`← write` 是结果，`✗ write Permission denied by user` 是没做成；被拒的调用只有 `✗`，不会同时留下一行「做了」和一行「没做」
+- 长参数截到 160 个字符并留一个 `…`，引用参数时跳过开头的空行，取第一条真有内容的行
+- 附件写在正文之外：`files: attached readme.md`、`files: not attached …missing.md`、`codebase: attached 1 chunk (alpha.ts:1)`；子代理报自己是谁、去做什么、花了多少：`↳ explore agent: find the parser` 与 `↳ explore done · 16 tokens · $0.0001`
+- plan 框只在有计划时出现。`plan · 1/3 done` 数的是做完的步，不是开始的步；`[x]` `[~]` `[ ]` 三个记号和 `task` 工具自己的回报、`/export` 导出的清单读同一张表，所以「屏幕说做完了、导出说没做完」这种分歧写不出来。`/clear` 后框跟着旧会话一起没，`/fork` 后框带着计划进新会话
+
 ## 权限模型
 
 | 模式          | 行为                                              |

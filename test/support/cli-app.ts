@@ -10,6 +10,7 @@ import { App, type AppProps } from '../../src/cli/App.js';
 import { CheckpointStore } from '../../src/core/checkpoints.js';
 import { ProviderRegistry } from '../../src/providers/registry.js';
 import type { ModelProvider } from '../../src/providers/types.js';
+import type { Embedder } from '../../src/rag/embedder.js';
 import { defaultSessionFile, SessionStore } from '../../src/session/store.js';
 import type { PermissionMode } from '../../src/tools/types.js';
 
@@ -125,6 +126,71 @@ export function echoModel(asked: string[]): MockLanguageModelV4 {
   });
 }
 
+/**
+ * One turn the model works through: a tool call, or a sentence.
+ * `null` runs out the script on purpose, so a loop shows up as that text.
+ */
+export type ScriptStep =
+  | { text: string }
+  | { tool: { name: string; input: Record<string, unknown> } };
+
+function stepUsage(input: number, output: number) {
+  return {
+    inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: output, text: output, reasoning: 0 },
+  };
+}
+
+/**
+ * A provider that works through a script, one request at a time, so a test can
+ * put the model's calls on the screen in a known order. Running out answers with
+ * a sentence that says so rather than repeating the last step.
+ */
+export function scriptedTurn(steps: ScriptStep[]): MockLanguageModelV4 {
+  let call = 0;
+  return new MockLanguageModelV4({
+    async doStream() {
+      call += 1;
+      const step = steps[call - 1] ?? { text: '(the script ran out)' };
+      if ('text' in step) {
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: `t-${call}` },
+              { type: 'text-delta', id: `t-${call}`, delta: step.text },
+              { type: 'text-end', id: `t-${call}` },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop' as const, raw: undefined },
+                usage: stepUsage(12, 4),
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'tool-call' as const,
+              toolCallId: `call-${call}`,
+              toolName: step.tool.name,
+              input: JSON.stringify(step.tool.input),
+            },
+            {
+              type: 'finish',
+              finishReason: { unified: 'tool-calls' as const, raw: undefined },
+              usage: stepUsage(10, 3),
+            },
+          ],
+        }),
+      };
+    },
+  });
+}
+
 export function renderCliApp(props: AppProps): CliApp {
   const stdin = fakeKeyboard();
   const { stdout, frames } = fakeScreen();
@@ -219,6 +285,8 @@ export async function cliScenario(
     initialMessages?: AppProps['initialMessages'];
     /** Which model the session starts on; the window comes from MODEL_WINDOWS. */
     modelId?: string;
+    /** Only a run with one can answer `@codebase`, which is what that test asks. */
+    embedder?: Embedder;
   } = {},
 ): Promise<CliScenario> {
   const dir = await mkdtemp(path.join(tmpdir(), 'cake-cli-app-'));
@@ -259,6 +327,7 @@ export async function cliScenario(
     initialMessages: options.initialMessages ?? [],
     pricing: {},
     checkpoints: CheckpointStore.forWorkspace(dir),
+    ...(options.embedder ? { embedder: options.embedder } : {}),
   };
   const app = renderCliApp(props);
   return {

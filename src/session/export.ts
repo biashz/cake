@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { ModelMessage } from 'ai';
 import { spendLabel } from '../core/cost.js';
 import { storedImage } from '../core/images.js';
+import { TASK_MARKS } from '../core/plan.js';
 import type { TaskItem } from '../tools/types.js';
 import type { SessionMeta, SessionStore } from './store.js';
 
@@ -12,12 +13,6 @@ export interface SessionDocument {
   messages: ModelMessage[];
   plan: TaskItem[];
 }
-
-const MARKS: Record<TaskItem['status'], string> = {
-  pending: '[ ]',
-  in_progress: '[~]',
-  completed: '[x]',
-};
 
 /** `2026-11-06 14:03`, UTC — a file has to mean the same thing on every machine. */
 function stamp(value: number): string {
@@ -132,7 +127,7 @@ export function renderSession(document: SessionDocument): SessionRender {
 
   if (plan.length > 0) {
     out.push('', '## Plan', '');
-    for (const item of plan) out.push(`- ${MARKS[item.status]} ${item.subject}`);
+    for (const item of plan) out.push(`- ${TASK_MARKS[item.status]} ${item.subject}`);
   }
 
   let turn = 0;

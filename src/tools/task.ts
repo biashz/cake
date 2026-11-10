@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { CakeTool, TaskItem, TaskStatus } from './types.js';
+import { TASK_MARKS } from '../core/plan.js';
+import type { CakeTool, TaskItem } from './types.js';
 
 const schema = z.object({
   action: z.enum(['add', 'update', 'list', 'clear']).describe('Operation to perform'),
@@ -15,12 +16,7 @@ type Args = z.infer<typeof schema>;
 
 function render(tasks: TaskItem[]): string {
   if (tasks.length === 0) return 'Task list is empty';
-  const icon: Record<TaskStatus, string> = {
-    pending: '[ ]',
-    in_progress: '[~]',
-    completed: '[x]',
-  };
-  return tasks.map((task) => `${icon[task.status]} ${task.id}. ${task.subject}`).join('\n');
+  return tasks.map((task) => `${TASK_MARKS[task.status]} ${task.id}. ${task.subject}`).join('\n');
 }
 
 /** In-memory checklist so the model can plan and track multi-step work. */

@@ -58,6 +58,25 @@ describe('write', () => {
     expect(out).toContain('Wrote 5 bytes');
     expect(await readTool.execute({ path: 'nested/dir/file.txt' }, ctx)).toContain('1│ hello');
   });
+
+  it('counts the lines it wrote, and a trailing newline is not one of them', async () => {
+    // The number is what the model reads back to decide whether the file is
+    // done; counting the empty string after a final newline told it the file
+    // had a line it does not have.
+    expect(await writeTool.execute({ path: 'one.txt', content: 'hello\n' }, ctx)).toContain(
+      '(1 line)',
+    );
+    expect(await writeTool.execute({ path: 'two.txt', content: 'one\ntwo\n' }, ctx)).toContain(
+      '(2 lines)',
+    );
+    expect(await writeTool.execute({ path: 'three.txt', content: 'no newline' }, ctx)).toContain(
+      '(1 line)',
+    );
+    expect(await writeTool.execute({ path: 'blank.txt', content: 'a\n\nb\n' }, ctx)).toContain(
+      '(3 lines)',
+    );
+    expect(await writeTool.execute({ path: 'empty.txt', content: '' }, ctx)).toContain('(0 lines)');
+  });
 });
 
 describe('edit', () => {

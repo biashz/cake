@@ -31,7 +31,11 @@ export const writeTool: CakeTool<Args, string> = {
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, args.content, 'utf8');
     const bytes = Buffer.byteLength(args.content, 'utf8');
-    const lines = args.content.length === 0 ? 0 : args.content.split('\n').length;
-    return `Wrote ${bytes} bytes (${lines} lines) to ${toPosix(path.relative(ctx.cwd, abs))}`;
+    // A trailing newline ends the last line; it does not start an empty one.
+    const body = args.content.endsWith('\n') ? args.content.slice(0, -1) : args.content;
+    const lines = body === '' ? 0 : body.split('\n').length;
+    return `Wrote ${bytes} bytes (${lines} ${lines === 1 ? 'line' : 'lines'}) to ${toPosix(
+      path.relative(ctx.cwd, abs),
+    )}`;
   },
 };
