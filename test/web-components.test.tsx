@@ -418,6 +418,15 @@ describe('CostPanel', () => {
     expect(screen.getAllByText('Main model')).toHaveLength(2);
     expect(screen.getAllByText('Subagent: Explore')).toHaveLength(2);
     expect(screen.getByTestId('cost-spend').textContent).toBe('$0.0077');
+    // Each turn is stamped with the clock alone — the same rule the transcript's
+    // loose cards follow, restated here rather than called, so a formatter that
+    // starts printing the date is caught by both surfaces.
+    expect(turns[0]?.querySelector('.board-when')?.textContent).toBe(
+      new Date(boardRow().occurredAt).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    );
     expect(screen.queryByTestId('cost-detail-note')).toBeNull();
   });
 
@@ -2207,9 +2216,12 @@ describe('Transcript undo', () => {
         : reverted();
     });
     withUndo(rows, onUndo);
+    // c-2 has no card of its own in this transcript, so it is offered at the foot
+    // as well; the clicks below are the ones made from the card that asked.
+    const card = screen.getByTestId('turn');
 
     await act(async () => {
-      fireEvent.click(screen.getByTestId('turn-undo-button'));
+      fireEvent.click(within(card).getByTestId('turn-undo-button'));
     });
 
     const blocked = screen.getByTestId('turn-undo-blocked');
@@ -2219,7 +2231,7 @@ describe('Transcript undo', () => {
     expect(asks).toEqual([['c-1', false]]);
 
     await act(async () => {
-      fireEvent.click(screen.getByTestId('turn-undo-button'));
+      fireEvent.click(within(card).getByTestId('turn-undo-button'));
     });
 
     expect(asks).toEqual([
@@ -2227,7 +2239,7 @@ describe('Transcript undo', () => {
       ['c-1', true],
     ]);
     expect(screen.queryByTestId('turn-undo-blocked')).toBeNull();
-    expect(screen.getByTestId('turn-undo-list')).toBeTruthy();
+    expect(within(card).getByTestId('turn-undo-list')).toBeTruthy();
   });
 
   it('says what the kernel answered instead of pretending it moved', async () => {
@@ -2251,5 +2263,147 @@ describe('Transcript undo', () => {
       true,
     );
     expect((screen.getByTestId('turn-undo-button') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('Transcript: the turns with no card above', () => {
+  function loose(overrides: Partial<CheckpointTurnRow> = {}): CheckpointTurnRow {
+    return {
+      checkpointId: 'c-9',
+      prompt: 'write the report',
+      startedAt: 1_700_000_500_000,
+      files: ['report.md'],
+      ...overrides,
+    };
+  }
+
+  function show(
+    entries: Entry[],
+    checkpoints: CheckpointTurnRow[],
+    onUndo = vi.fn(async () => ({
+      checkpointId: 'c-9',
+      applied: true,
+      changes: [{ path: 'report.md', action: 'restored' as const }],
+      overwrittenBy: [],
+    })),
+  ) {
+    render(
+      <Transcript
+        entries={entries}
+        streaming=""
+        onInsertFile={vi.fn()}
+        checkpoints={checkpoints}
+        running={false}
+        onUndo={onUndo}
+      />,
+    );
+    return onUndo;
+  }
+
+  /** One answered turn, asking something other than the archive was filed under. */
+  const otherTurn: Entry[] = [{ id: 0, role: 'user', text: 'something the session kept' }];
+
+  it('gives an archive no card claimed a card of its own', () => {
+    show(otherTurn, [loose()]);
+    const tray = screen.getByTestId('turn-loose');
+    expect(tray.textContent).toContain('Turns with no card above');
+    // The one card the session kept is still the only card; the tray is not a
+    // second copy of it. This is the `@codebase` case: a turn that answered, whose
+    // recorded ask no longer reads like the card's, so nothing claims it.
+    expect(screen.getAllByTestId('turn')).toHaveLength(1);
+    // Whose turn it was, said in the words the turn itself used, and stamped with
+    // the clock alone — spelled out here rather than called, so a formatter that
+    // drifts is caught on this surface too.
+    expect(tray.textContent).toContain('write the report');
+    expect(tray.textContent).toContain(
+      new Date(1_700_000_500_000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    );
+    // And the same offer a turn card makes, files named before anything moves.
+    const row = within(tray).getByTestId('turn-undo');
+    expect(row.textContent).toContain('report.md');
+    expect(within(tray).getByTestId('turn-undo-button').textContent).toBe('Undo this turn');
+    // This is the second cause, and the tray has to keep naming it: a turn whose
+    // ask was rewritten answered just fine, and blaming its silence is a lie.
+    expect(tray.textContent).toContain('its ask was rewritten');
+  });
+
+  it('names the turn that stored nothing as the reason it has no card', () => {
+    show([], [loose()]);
+    // Nothing was answered here, so this is the case the sentence was written for.
+    expect(screen.getByTestId('turn-loose').textContent).toContain('stopped before it answered');
+  });
+
+  it('says once what the archive does not cover', () => {
+    show(otherTurn, [
+      loose(),
+      loose({ checkpointId: 'c-10', prompt: 'and the charts', files: ['chart.png', 'a.ts'] }),
+    ]);
+    const node = screen.getByTestId('turn-loose');
+    const caveat = 'Changes a shell command or an MCP tool made are not in this undo.';
+    expect(node.textContent?.split(caveat)).toHaveLength(2);
+    // Two archives nobody claimed, so two separate ways back.
+    expect(within(node).getAllByTestId('turn-undo')).toHaveLength(2);
+    expect(within(node).getByText('2 files')).toBeTruthy();
+  });
+
+  it('moves the files when the loose card is asked to', async () => {
+    const onUndo = show(otherTurn, [loose()]);
+    await act(async () => {
+      fireEvent.click(within(screen.getByTestId('turn-loose')).getByTestId('turn-undo-button'));
+    });
+    expect(onUndo).toHaveBeenCalledWith('c-9', false);
+    expect(
+      within(screen.getByTestId('turn-loose')).getByTestId('turn-undo-list').textContent,
+    ).toContain('report.md');
+  });
+
+  it('keeps a claimed archive on its own card and out of the loose ones', () => {
+    show(
+      [
+        { id: 0, role: 'user', text: 'rename the parser' },
+        {
+          id: 1,
+          role: 'tool',
+          tool: {
+            callId: 'w-1',
+            name: 'write',
+            input: { path: 'src/parser.ts', content: 'x\n' },
+            status: 'done',
+          },
+        },
+      ],
+      [
+        {
+          checkpointId: 'c-1',
+          prompt: 'rename the parser',
+          startedAt: 1,
+          files: ['src/parser.ts'],
+        },
+      ],
+    );
+    expect(screen.queryByTestId('turn-loose')).toBeNull();
+    // The undo is still there — it just lives under the card that asked for it.
+    expect(screen.getByTestId('turn-undo')).toBeTruthy();
+    expect(screen.getByText('can undo')).toBeTruthy();
+  });
+
+  it('shows the loose card in a session whose stored transcript is empty', () => {
+    show([], [loose()]);
+    // "No turns yet" would contradict the card right under it.
+    expect(screen.queryByTestId('transcript-empty')).toBeNull();
+    expect(screen.getByTestId('turn-loose')).toBeTruthy();
+  });
+
+  it('keeps the empty invitation when there is nothing to give back at all', () => {
+    show([], []);
+    expect(screen.getByTestId('transcript-empty')).toBeTruthy();
+    expect(screen.queryByTestId('turn-loose')).toBeNull();
+  });
+
+  it('offers the files of an archive whose ask was never recorded', () => {
+    show(otherTurn, [loose({ prompt: '' })]);
+    const node = screen.getByTestId('turn-loose');
+    expect(node.textContent).toContain('no ask recorded');
+    expect(within(node).getByTestId('turn-undo')).toBeTruthy();
   });
 });

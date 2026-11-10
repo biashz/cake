@@ -2043,6 +2043,74 @@ body.is-resizing {
   }
 }
 
+/* ---------------- the turns with no card above ---------------- */
+
+/* An archive no card took gets a tray of its own at the foot of the transcript.
+   Dashed and quiet on purpose: the fact worth noticing is that this undo has no
+   turn to point at, not that the row is important. */
+.turn-loose {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px 13px 13px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-panel);
+  background: var(--panel-2);
+}
+
+.turn-loose-title {
+  margin: 0;
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.turn-loose-hint {
+  margin: 0;
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.turn-loose-row {
+  display: grid;
+  gap: 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.turn-loose-ask {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.turn-loose-prompt {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-body);
+  line-height: 1.35;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+.turn-loose-when {
+  flex: none;
+  font-size: var(--fs-label);
+  color: var(--muted);
+}
+
+/* the tray divides its rows and names the caveat once, so the undo inside it
+   drops the border and the sentence it would only repeat */
+.turn-loose .turn-undo {
+  margin-top: 0;
+  padding-top: 2px;
+  border-top: none;
+}
+
 /* ---------------- tool calls ---------------- */
 
 .tool-group {

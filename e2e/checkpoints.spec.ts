@@ -165,3 +165,54 @@ test('the turn a provider refuses still gives the file it changed back', async (
     await ui.close();
   }
 });
+
+test('a refused turn is still given back after the session is reopened', async () => {
+  // A turn that throws stores no transcript, so on reopen there is no card left
+  // to hang its archive on. The archive is a fact about the workspace regardless,
+  // so it comes back with a card of its own rather than vanishing from the screen.
+  const ui = await startApp(
+    {
+      writes: (prompt) =>
+        prompt.includes('refuse')
+          ? { path: 'hello.txt', content: 'written before the refusal\n' }
+          : null,
+      fails: (prompt) => prompt.includes('refuse'),
+    },
+    { 'hello.txt': 'before\n' },
+  );
+
+  try {
+    const { window } = ui;
+    const file = path.join(ui.workspace, 'hello.txt');
+
+    await submit(window, 'refuse, create hello.txt');
+    await expect(window.getByTestId('entry-error').last()).toBeVisible({ timeout: 30_000 });
+    expect(await readFile(file, 'utf8')).toBe('written before the refusal\n');
+
+    // While the session is still open the turn has a card — the ask was typed
+    // into it — so the undo lives there and nowhere else.
+    await expect(window.getByTestId('turn-undo')).toContainText('hello.txt goes back');
+    await expect(window.getByTestId('turn-loose')).toHaveCount(0);
+
+    await window.getByRole('button', { name: /New session/ }).click();
+    await expect(window.getByTestId('turn-loose')).toHaveCount(0);
+    await window.locator('.session-main', { hasText: 'refuse, create hello.txt' }).click();
+
+    // Reopened, the refused turn left nothing to store, so no card claims its
+    // archive. The tray names the ask in the turn's own words and the file that
+    // goes back.
+    const loose = window.getByTestId('turn-loose');
+    await expect(loose).toBeVisible();
+    await expect(loose).toContainText('refuse, create hello.txt');
+    await expect(loose).toContainText('hello.txt goes back');
+    // And it is not filed under "no turns yet" — the card below contradicts that.
+    await expect(window.getByTestId('transcript-empty')).toHaveCount(0);
+    await expect(window.getByTestId('turn-undo')).toHaveCount(1);
+
+    await loose.getByTestId('turn-undo-button').click();
+    await expect(loose.getByTestId('turn-undo-list')).toContainText('hello.txt put back');
+    expect(await readFile(file, 'utf8')).toBe('before\n');
+  } finally {
+    await ui.close();
+  }
+});

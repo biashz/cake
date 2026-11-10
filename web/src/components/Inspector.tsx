@@ -25,6 +25,7 @@ import type {
 import { parseRule } from '../../../src/permissions/rules.js';
 import type { TaskItem, TaskStatus } from '../../../src/tools/types.js';
 import { changeStats, type FileChange } from '../changes';
+import { shortTime } from '../transcript';
 import { Icon } from './Icons';
 import { SliceBlock } from './Slice';
 import { DiffView } from './ToolCard';
@@ -817,11 +818,6 @@ function RateTable({
       ))}
     </div>
   );
-}
-
-/** Turns are listed by clock time, not by the moment's full timestamp. */
-function shortTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 /** One billed model call inside a turn: who ran it, what it cost. */

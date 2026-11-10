@@ -52,6 +52,11 @@ export function previewValue(value: unknown, max = 160): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+/** Turns are listed by clock time, not by the moment's full timestamp. */
+export function shortTime(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 /** One-line target for a tool call: path, command, prompt, query, or fallback JSON. */
 export function summarizeInput(input: unknown): string {
   if (typeof input !== 'object' || input === null) return previewValue(input);
@@ -387,7 +392,7 @@ function sameAsk(row: string, card: string): boolean {
 }
 
 /**
- * Which card each undo archive belongs to.
+ * Which card each undo archive belongs to, and which ones belong to none.
  *
  * Turn numbers cannot answer that: a compressed or a failed turn changes what
  * the nth turn is on one side of the wire and not the other, and a wrong answer
@@ -395,12 +400,18 @@ function sameAsk(row: string, card: string): boolean {
  * a turn both sides keep, so a card answers to an archive only when that
  * archive asked its own words — and when two cards ask the same words, only the
  * one whose own calls named a file the archive can put back. Anything still
- * tied is left unlinked, which shows as no undo rather than as the wrong undo.
+ * tied is left off the cards, which is where `unclaimed` picks it up: the
+ * archive is a fact about the workspace whatever did it, so it gets a card of
+ * its own rather than vanishing from the screen.
  */
-export function linkUndos(
-  turns: Turn[],
-  rows: CheckpointTurnRow[],
-): Map<number, CheckpointTurnRow> {
+export interface UndoLinks {
+  /** The archive a card can give back, by card key. Absent means that card has nothing to undo. */
+  byTurn: Map<number, CheckpointTurnRow>;
+  /** Every archive no card took, in the order the turns ran. */
+  unclaimed: CheckpointTurnRow[];
+}
+
+export function linkUndos(turns: Turn[], rows: CheckpointTurnRow[]): UndoLinks {
   const claims: { turn: Turn; rows: CheckpointTurnRow[] }[] = [];
   for (const turn of turns) {
     const asked = turn.user?.text;
@@ -425,13 +436,15 @@ export function linkUndos(
     }
   }
 
-  const links = new Map<number, CheckpointTurnRow>();
+  const byTurn = new Map<number, CheckpointTurnRow>();
   for (const claim of claims) {
     const row = claim.rows.length === 1 ? claim.rows[0] : undefined;
     if (!row) continue;
     // Still answered by another card that can prove it too: neither is told.
     if (claims.filter((other) => other.rows[0] === row).length > 1) continue;
-    links.set(claim.turn.key, row);
+    byTurn.set(claim.turn.key, row);
   }
-  return links;
+
+  const taken = new Set(byTurn.values());
+  return { byTurn, unclaimed: rows.filter((row) => !taken.has(row)) };
 }

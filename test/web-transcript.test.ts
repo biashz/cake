@@ -328,7 +328,8 @@ describe('linkUndos', () => {
       wrote(1, 'w-1', 'src/parser.ts'),
     ]);
     const links = linkUndos(turns, [archive('c-1', 'rename the parser', ['src/parser.ts'])]);
-    expect(links.get(turns[0]?.key ?? -1)?.checkpointId).toBe('c-1');
+    expect(links.byTurn.get(turns[0]?.key ?? -1)?.checkpointId).toBe('c-1');
+    expect(links.unclaimed).toHaveLength(0);
   });
 
   it('reads a stored prompt through the annex an @file mention pulled in', () => {
@@ -338,12 +339,13 @@ describe('linkUndos', () => {
       wrote(1, 'w-1', 'parser.ts'),
     ]);
     const links = linkUndos(turns, [archive('c-1', typed, ['parser.ts'])]);
-    expect(links.get(turns[0]?.key ?? -1)?.checkpointId).toBe('c-1');
+    expect(links.byTurn.get(turns[0]?.key ?? -1)?.checkpointId).toBe('c-1');
   });
 
   it('will not read a longer ask as the one it starts with', () => {
     const turns = buildTurns([{ id: 0, role: 'user', text: 'fix the parser and the tests' }]);
-    expect(linkUndos(turns, [archive('c-1', 'fix the parser', ['a.ts'])]).size).toBe(0);
+    const links = linkUndos(turns, [archive('c-1', 'fix the parser', ['a.ts'])]);
+    expect(links.byTurn.size).toBe(0);
   });
 
   it('tells two turns that asked the same words apart by the files they moved', () => {
@@ -357,8 +359,8 @@ describe('linkUndos', () => {
       archive('c-a', 'fix it', ['a.ts']),
       archive('c-b', 'fix it', ['b.ts']),
     ]);
-    expect(links.get(turns[0]?.key ?? -1)?.checkpointId).toBe('c-a');
-    expect(links.get(turns[1]?.key ?? -1)?.checkpointId).toBe('c-b');
+    expect(links.byTurn.get(turns[0]?.key ?? -1)?.checkpointId).toBe('c-a');
+    expect(links.byTurn.get(turns[1]?.key ?? -1)?.checkpointId).toBe('c-b');
   });
 
   it('keeps one archive for the card its files prove, and tells the other nothing', () => {
@@ -369,8 +371,8 @@ describe('linkUndos', () => {
       wrote(3, 'w-2', 'b.ts'),
     ]);
     const links = linkUndos(turns, [archive('c-a', 'fix it', ['a.ts'])]);
-    expect(links.get(turns[0]?.key ?? -1)?.checkpointId).toBe('c-a');
-    expect(links.has(turns[1]?.key ?? -1)).toBe(false);
+    expect(links.byTurn.get(turns[0]?.key ?? -1)?.checkpointId).toBe('c-a');
+    expect(links.byTurn.has(turns[1]?.key ?? -1)).toBe(false);
   });
 
   it('leaves both cards without undo rather than guess between two identical asks', () => {
@@ -382,7 +384,7 @@ describe('linkUndos', () => {
     ]);
     // Both cards wrote the same path, so the archive proves nothing about which
     // turn closed it.
-    expect(linkUndos(turns, [archive('c-1', 'fix it', ['a.ts'])]).size).toBe(0);
+    expect(linkUndos(turns, [archive('c-1', 'fix it', ['a.ts'])]).byTurn.size).toBe(0);
   });
 
   it('offers no undo when an ask matches more than one archive and no file settles it', () => {
@@ -391,7 +393,7 @@ describe('linkUndos', () => {
       archive('c-a', 'fix it', ['a.ts']),
       archive('c-b', 'fix it', ['b.ts']),
     ]);
-    expect(links.size).toBe(0);
+    expect(links.byTurn.size).toBe(0);
   });
 
   it('says nothing to a card that never asked for anything', () => {
@@ -399,11 +401,46 @@ describe('linkUndos', () => {
       { id: 0, role: 'note', kind: 'export', text: 'Markdown transcript' },
       { id: 1, role: 'user', text: '' },
     ]);
-    expect(linkUndos(turns, [archive('c-1', '', ['a.ts'])]).size).toBe(0);
+    expect(linkUndos(turns, [archive('c-1', '', ['a.ts'])]).byTurn.size).toBe(0);
+  });
+
+  it('hands back the archive of a turn that left no card at all', () => {
+    // The turn was refused before it answered, so its transcript was never stored
+    // and reopening the session shows no card. The archive is still a fact about
+    // the workspace, so it comes back unclaimed rather than vanishing.
+    const turns = buildTurns([{ id: 0, role: 'user', text: 'something else entirely' }]);
+    const links = linkUndos(turns, [archive('c-1', 'write the report', ['report.md'])]);
+    expect(links.byTurn.size).toBe(0);
+    expect(links.unclaimed.map((row) => row.checkpointId)).toEqual(['c-1']);
+  });
+
+  it('keeps an archive out of the loose ones once a card has taken it', () => {
+    const turns = buildTurns([
+      { id: 0, role: 'user', text: 'rename the parser' },
+      wrote(1, 'w-1', 'src/parser.ts'),
+    ]);
+    const links = linkUndos(turns, [archive('c-1', 'rename the parser', ['src/parser.ts'])]);
+    expect(links.unclaimed).toHaveLength(0);
+  });
+
+  it('lists the loose archives in the order the turns ran', () => {
+    const turns = buildTurns([{ id: 0, role: 'user', text: 'a turn answered' }]);
+    const links = linkUndos(turns, [
+      archive('c-1', 'the ask that died', ['a.ts']),
+      archive('c-2', 'a later one that died', ['b.ts']),
+    ]);
+    expect(links.unclaimed.map((row) => row.checkpointId)).toEqual(['c-1', 'c-2']);
+  });
+
+  it('surfaces a loose archive whose ask was never recorded', () => {
+    const links = linkUndos(buildTurns([]), [archive('c-1', '', ['a.ts'])]);
+    expect(links.unclaimed.map((row) => row.checkpointId)).toEqual(['c-1']);
   });
 
   it('attaches nothing to a card whose turn has no archive at all', () => {
     const turns = buildTurns([{ id: 0, role: 'user', text: 'explain the parser' }]);
-    expect(linkUndos(turns, []).size).toBe(0);
+    const links = linkUndos(turns, []);
+    expect(links.byTurn.size).toBe(0);
+    expect(links.unclaimed).toHaveLength(0);
   });
 });

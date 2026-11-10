@@ -8,6 +8,7 @@ import {
   type Entry,
   linkUndos,
   previewValue,
+  shortTime,
   type ToolInfo,
   type Turn,
 } from '../transcript';
@@ -286,11 +287,14 @@ function UndoRow({
   running,
   onUndo,
   laterWords,
+  caveat = true,
 }: {
   row: CheckpointTurnRow;
   running: boolean;
   onUndo: (checkpointId: string, force: boolean) => Promise<RevertResult>;
   laterWords: (ids: string[]) => string;
+  /** False where the same sentence is already said once above a group of rows. */
+  caveat?: boolean;
 }) {
   const [state, setState] = useState<UndoState>({ kind: 'idle' });
   const blocked = state.kind === 'done' && !state.result.applied;
@@ -359,7 +363,7 @@ function UndoRow({
           ))}
         </ul>
       ) : null}
-      <p className="turn-undo-caveat">{NOT_UNDONE}</p>
+      {caveat ? <p className="turn-undo-caveat">{NOT_UNDONE}</p> : null}
     </div>
   );
 }
@@ -524,7 +528,7 @@ export function Transcript({
         aria-label="Conversation"
         aria-live="polite"
       >
-        {entries.length === 0 && streaming === '' ? (
+        {entries.length === 0 && streaming === '' && undos.unclaimed.length === 0 ? (
           <div className="transcript-empty">
             <span className="transcript-empty-mark" aria-hidden="true">
               <Icon name="spark" size={20} />
@@ -548,12 +552,45 @@ export function Transcript({
             copy={copy}
             copiedId={copied}
             onInsertFile={onInsertFile}
-            {...(undos.get(turn.key) ? { undo: undos.get(turn.key) } : {})}
+            {...(undos.byTurn.get(turn.key) ? { undo: undos.byTurn.get(turn.key) } : {})}
             running={running}
             onUndo={onUndo}
             laterWords={laterWords}
           />
         ))}
+        {/* An archive no card took still describes the workspace, so it gets a card
+            of its own instead of vanishing from the screen. Two turns end up here —
+            one that died before it stored anything, one whose ask was rewritten on
+            the way in — and the tray says both rather than guessing which. */}
+        {undos.unclaimed.length === 0 ? null : (
+          <section className="turn-loose" data-testid="turn-loose">
+            <p className="turn-loose-title">Turns with no card above</p>
+            <p className="turn-loose-hint">
+              Each of these turns changed files and has no card of its own here: it either stopped
+              before it answered, so nothing it said was kept, or its ask was rewritten on the way
+              in. What it changed is archived, and this gives it back. {NOT_UNDONE}
+            </p>
+            {undos.unclaimed.map((row) => (
+              <div className="turn-loose-row" data-testid="turn-loose-row" key={row.checkpointId}>
+                <div className="turn-loose-ask">
+                  <span className="turn-loose-prompt" title={row.prompt}>
+                    {row.prompt.trim() === ''
+                      ? 'no ask recorded'
+                      : `“${previewValue(row.prompt, 90)}”`}
+                  </span>
+                  <span className="turn-loose-when mono">{shortTime(row.startedAt)}</span>
+                </div>
+                <UndoRow
+                  row={row}
+                  running={running}
+                  onUndo={onUndo}
+                  laterWords={laterWords}
+                  caveat={false}
+                />
+              </div>
+            ))}
+          </section>
+        )}
         {streaming ? <Bubble text={streaming} live /> : null}
       </div>
       {!pinned ? (
