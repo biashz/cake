@@ -8,6 +8,7 @@ import type { AgentEvent } from '../core/events.js';
 import { planProgress } from '../core/plan.js';
 import type { PricingOverrides } from '../core/pricing.js';
 import { createTrace } from '../observability/trace.js';
+import { MODE_NAMES, modeHelp, parsePermissionMode } from '../permissions/modes.js';
 import type { PermissionRules } from '../permissions/rules.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { ModelSpec } from '../providers/types.js';
@@ -25,6 +26,7 @@ import type {
   TaskStatus,
   ToolContext,
 } from '../tools/types.js';
+import { commandHelp } from './commands.js';
 import { revertTurn } from './revert.js';
 
 type EntryRole = 'user' | 'assistant' | 'tool' | 'error' | 'info';
@@ -63,17 +65,6 @@ export interface AppProps {
   mcpTools?: CakeTool[];
 }
 
-const COMMANDS = [
-  '/help            show this list',
-  '/clear           start a new session',
-  '/fork            branch this conversation into a new session',
-  '/export [file]   write the transcript as Markdown',
-  '/revert [n]      undo the file changes of turn n (newest if omitted); "list" shows them',
-  '/model <id>      switch model id (same provider)',
-  '/cost            session token and cost totals',
-  '/exit            quit (or Ctrl+C)',
-].join('\n');
-
 const PLAN_MARKS: Record<TaskStatus, string> = {
   pending: '[ ]',
   in_progress: '[~]',
@@ -87,21 +78,13 @@ function preview(value: unknown, max = 160): string {
 }
 
 export function App(props: AppProps) {
-  const {
-    registry,
-    cwd,
-    permissionMode,
-    rules,
-    system,
-    store,
-    maxContext,
-    pricing,
-    checkpoints,
-    embedder,
-  } = props;
+  const { registry, cwd, rules, system, store, maxContext, pricing, checkpoints, embedder } = props;
   const mcpTools = props.mcpTools ?? [];
   const { exit } = useApp();
   const [model, setModel] = useState<ModelSpec>(props.model);
+  // Started from the flag, then owned by /mode: which tools need asking is a
+  // decision for the session, not one you have to restart the program to make.
+  const [mode, setMode] = useState<PermissionMode>(props.permissionMode);
   const [session, setSession] = useState<SessionMeta>(props.session);
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [input, setInput] = useState('');
@@ -133,7 +116,7 @@ export function App(props: AppProps) {
         exit();
         return;
       case 'help':
-        addEntry({ role: 'info', text: COMMANDS });
+        addEntry({ role: 'info', text: commandHelp() });
         return;
       case 'clear': {
         const next = store.create({
@@ -191,6 +174,22 @@ export function App(props: AppProps) {
         setModel(next);
         store.updateModel(session.id, next.provider, next.modelId);
         addEntry({ role: 'info', text: `model → ${next.provider}/${next.modelId}` });
+        return;
+      }
+      case 'mode': {
+        if (!arg) {
+          addEntry({ role: 'info', text: [`mode: ${mode}`, modeHelp()].join('\n') });
+          return;
+        }
+        const nextMode = parsePermissionMode(arg);
+        // A name that is not one of the four leaves the session in the mode it
+        // was in; guessing which mode a typo meant would be a worse surprise.
+        if (!nextMode) {
+          addEntry({ role: 'info', text: `unknown mode "${arg}" — ${MODE_NAMES}` });
+          return;
+        }
+        setMode(nextMode);
+        addEntry({ role: 'info', text: `mode → ${nextMode}` });
         return;
       }
       case 'cost': {
@@ -322,7 +321,7 @@ export function App(props: AppProps) {
       registry,
       model,
       systemBase: system,
-      mode: permissionMode,
+      mode,
       rules,
       pricing,
       abortSignal: controller.signal,
@@ -335,7 +334,7 @@ export function App(props: AppProps) {
         registry,
         model,
         system,
-        mode: permissionMode,
+        mode,
         rules,
         tools,
         history: historyRef.current,
@@ -453,8 +452,8 @@ export function App(props: AppProps) {
         </Text>
         <Text dimColor>
           {' '}
-          {model.provider}/{model.modelId} · mode={permissionMode} · session{' '}
-          {session.id.slice(0, 8)} · /help · Ctrl+C to quit
+          {model.provider}/{model.modelId} · mode={mode} · session {session.id.slice(0, 8)} · /help
+          · Ctrl+C to quit
         </Text>
       </Text>
 

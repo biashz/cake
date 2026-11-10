@@ -87,9 +87,10 @@ cake --doctor
 
 - `@path/to/file` 把文件内容附进本条消息
 - `@codebase` 先做一次语义检索，把相关代码块附进消息
-- `/help` `/clear` `/fork` `/export [file]` `/revert [n]` `/model <id>` `/cost` `/exit`（`/quit` 同义）——`/help` 列出的每一条都真的接得住，列进清单的名字写错一个字母就会被测试抓住
+- `/help` `/clear` `/fork` `/export [file]` `/revert [n]` `/model <id>` `/mode <name>` `/cost` `/exit`（`/quit` 同义）——`/help` 列出的每一条都真的接得住，列进清单的名字写错一个字母就会被测试抓住；`cake --help` 那一行和 `/help` 现在读同一张表，命令只可能两边一起少
 - 审批卡只认这几个键：`y` 或 Enter 放行，`n` 或 Esc 拒绝；`Ctrl+C` 把这一轮连同卡片一起撤掉，拒掉的写操作从不落盘，`/revert list` 也不会把它算成改过文件的一轮
 - `/model <id>` 写进当前会话那一行，所以下次 `cake -c` 就从新模型回来，而不是只改这次屏幕上的显示
+- `/mode <name>` 在不必重启的前提下换权限模式，屏幕顶部那行 `mode=` 就是这一轮真正生效的那个；名字不在四个里就报出来并维持原样，猜你想按哪个模式打字错误比原地不动更糟。模式不写进会话那一行——下次启动仍按 `--permission-mode`（或 `-y`）来，`cake -c` 不会替你记住上一轮按过 `yolo`
 - 一轮正在跑的时候键盘不接单：这时敲的字符不进队列、也不提示丢了，屏幕右下角的 `(working… Ctrl+C to cancel)` 消失之后重新敲才算数（桌面端的输入框没有这个限制，它按会话分屏）
 
 ## 权限模型
@@ -100,6 +101,8 @@ cake --doctor
 | `default`     | 读操作放行；写文件与 shell 需要逐次审批           |
 | `acceptEdits` | 写文件放行；shell 仍需审批                        |
 | `yolo`        | 全部放行                                          |
+
+`plan` 的"禁止"是把工具从模型看得见的那份清单里摘掉，不是等它调完再拒绝：交互会话里四个模式各自的边界（包括哪一种调用还会报 `... is disabled in plan mode`）由 `test/cli-app-mode.test.ts` 逐条跑一遍真回合量出来。`git` 是唯一一个同一工具里既有读又有写的，所以它留在桌上，写的那一半按名拒掉。
 
 项目级规则写在 `.cake/settings.json`（全局为 `~/.cake/settings.json`，两处会合并）：
 

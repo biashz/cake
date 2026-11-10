@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { render } from 'ink';
 import { App } from './cli/App.js';
+import { helpText } from './cli/help.js';
 import { revertTurn } from './cli/revert.js';
 import { loadConfig } from './config/config.js';
 import { CheckpointStore } from './core/checkpoints.js';
@@ -12,6 +13,7 @@ import type { PricingOverrides } from './core/pricing.js';
 import { formatDoctor, runDoctor } from './diagnostics/doctor.js';
 import { openMcpServers } from './mcp/client.js';
 import { createTrace } from './observability/trace.js';
+import { MODE_NAMES, parsePermissionMode } from './permissions/modes.js';
 import type { PermissionRules } from './permissions/rules.js';
 import { loadSettings } from './permissions/settings.js';
 import { createDefaultRegistry, type ProviderRegistry } from './providers/registry.js';
@@ -23,8 +25,6 @@ import { prepareSeaAssets } from './sea.js';
 import { defaultSessionFile, type SessionMeta, SessionStore } from './session/store.js';
 import type { CakeTool, PermissionMode, ToolContext } from './tools/types.js';
 import { VERSION } from './version.js';
-
-const PERMISSION_MODES: PermissionMode[] = ['plan', 'default', 'acceptEdits', 'yolo'];
 
 async function main(): Promise<void> {
   await prepareSeaAssets();
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   });
 
   if (values.help) {
-    printHelp();
+    process.stdout.write(helpText());
     return;
   }
   if (values.version) {
@@ -202,10 +202,9 @@ function resolveResume(
 
 function resolvePermissionMode(value: string | undefined, yes: boolean): PermissionMode {
   if (value === undefined) return yes ? 'yolo' : 'default';
-  if (!PERMISSION_MODES.includes(value as PermissionMode)) {
-    fail(`Invalid --permission-mode "${value}". Use one of: ${PERMISSION_MODES.join(', ')}`);
-  }
-  return value as PermissionMode;
+  const mode = parsePermissionMode(value);
+  if (!mode) fail(`Invalid --permission-mode "${value}". Use one of: ${MODE_NAMES}`);
+  return mode;
 }
 
 interface HeadlessOptions {
@@ -354,62 +353,6 @@ function brief(value: unknown): string {
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
   process.exit(1);
-}
-
-function printHelp(): void {
-  process.stdout.write(
-    [
-      'cake — a TypeScript CLI programming agent',
-      '',
-      'Usage:',
-      '  cake                      Start interactive chat',
-      '  cake "<prompt>"           Run a single prompt (headless)',
-      '  cake -p "<prompt>"        Same as above (explicit print mode)',
-      '',
-      'Options:',
-      '  -p, --print               Headless: stream the reply and exit',
-      '  -y, --yes                 Auto-approve every tool call (yolo mode)',
-      '      --permission-mode <m> plan | default | acceptEdits | yolo',
-      '      --provider <id>       Provider: deepseek | anthropic | openai',
-      '  -m, --model <id>          Model id (overrides config/default)',
-      '  -c, --continue            Resume the most recent session in this workspace',
-      '      --resume <id>         Resume a session by id',
-      '      --revert [n]          Undo the file changes of recorded turn n, then exit',
-      '      --doctor              Diagnose Node, providers, config, settings, MCP, sessions, index',
-      '  -h, --help                Show this help',
-      '  -v, --version             Print version',
-      '',
-      'Input:',
-      '  @path/to/file             Attach a file to the prompt',
-      '  @codebase                 Retrieve relevant code chunks (semantic search)',
-      '  /help  /clear  /fork  /export  /revert [n]  /model  /cost  /exit    Interactive commands',
-      '',
-      'Project context:',
-      '  AGENTS.md files from the workspace root upward are loaded into the system prompt.',
-      '  Sessions persist in .cake/sessions/cake.db (node:sqlite).',
-      '  /export writes the transcript to .cake/exports/<workspace>-<id>.md unless given a path.',
-      '  Files a turn changes are archived in .cake/checkpoints (last 50 turns) for /revert.',
-      '',
-      'MCP:',
-      '  ~/.cake/mcp.json and .cake/mcp.json define "mcpServers" (stdio or http).',
-      '  Tools appear as mcp__<server>__<tool>; read-only server hints map to read access.',
-      '',
-      'Permission modes:',
-      '  plan          Read-only: file reads and searches, nothing else',
-      '  default       Read tools run freely; writes and shell need approval',
-      '  acceptEdits   Writes run freely; shell still needs approval',
-      '  yolo          Everything runs without asking',
-      '',
-      'Environment:',
-      '  DEEPSEEK_API_KEY | ANTHROPIC_API_KEY | OPENAI_API_KEY   API keys',
-      '  CAKE_PROVIDER, CAKE_MODEL            Defaults (provider defaults to deepseek)',
-      '',
-      'Rules:',
-      '  .cake/settings.json  { "permissions": { "allow": ["bash(npm test*)"], "deny": [...] } }',
-      '  Rule syntax: tool or tool(pattern); * and ? are wildcards; deny wins over allow.',
-      '',
-    ].join('\n'),
-  );
 }
 
 main().catch((err: unknown) => {
