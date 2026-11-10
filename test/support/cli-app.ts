@@ -86,6 +86,21 @@ const keyWait = () => new Promise((resolve) => setTimeout(resolve, 4));
  */
 export function echoModel(asked: string[]): MockLanguageModelV4 {
   return new MockLanguageModelV4({
+    // A compressed history asks for its summary with generateText, so the model
+    // that answers turns has to answer that too — otherwise the app reports
+    // `compression skipped` and a test waits for a note that never comes.
+    async doGenerate({ prompt }) {
+      asked.push(JSON.stringify(prompt));
+      return {
+        content: [{ type: 'text' as const, text: 'a summary of the older turns' }],
+        finishReason: { unified: 'stop' as const, raw: undefined },
+        usage: {
+          inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 2, text: 2, reasoning: 0 },
+        },
+        warnings: [],
+      };
+    },
     async doStream({ prompt }) {
       asked.push(JSON.stringify(prompt));
       return {
@@ -182,13 +197,29 @@ export interface CliScenario {
 }
 
 /**
+ * Context windows per model id, so a test can ask whether a turn used the
+ * budget of the model it is running or the one the session started with.
+ */
+export const WIDE_WINDOW = 200_000;
+export const NARROW_MODEL_ID = 'claude-narrow';
+export const NARROW_WINDOW = 4_000;
+const MODEL_WINDOWS: Record<string, number> = {
+  [NARROW_MODEL_ID]: NARROW_WINDOW,
+};
+
+/**
  * An app over a real database and a real undo archive, pointed at a model that
  * answers from a script. `answers` are the turns the provider replies with; a
  * `null` in the list means the model asked for a tool instead.
  */
 export async function cliScenario(
   model?: MockLanguageModelV4,
-  options: { mode?: PermissionMode; initialMessages?: AppProps['initialMessages'] } = {},
+  options: {
+    mode?: PermissionMode;
+    initialMessages?: AppProps['initialMessages'];
+    /** Which model the session starts on; the window comes from MODEL_WINDOWS. */
+    modelId?: string;
+  } = {},
 ): Promise<CliScenario> {
   const dir = await mkdtemp(path.join(tmpdir(), 'cake-cli-app-'));
   // A command-only test never reaches the model; if one does, it is the command
@@ -206,22 +237,26 @@ export async function cliScenario(
     defaultModelId: 'claude-sonnet-4-5',
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
     languageModel: () => answers,
-    capabilities: () => ({ toolCalling: true, vision: true, maxContext: 200_000 }),
+    capabilities: (modelId) => ({
+      toolCalling: true,
+      vision: true,
+      maxContext: MODEL_WINDOWS[modelId] ?? WIDE_WINDOW,
+    }),
   };
   const registry = new ProviderRegistry().register(provider, 'test-key');
   const store = SessionStore.open(defaultSessionFile(dir));
-  const session = store.create({ cwd: dir, provider: 'anthropic', model: 'claude-sonnet-4-5' });
+  const startedOn = options.modelId ?? 'claude-sonnet-4-5';
+  const session = store.create({ cwd: dir, provider: 'anthropic', model: startedOn });
   const props: AppProps = {
     registry,
     cwd: dir,
-    model: { provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+    model: { provider: 'anthropic', modelId: startedOn },
     permissionMode: options.mode ?? 'default',
     rules: { allow: [], deny: [] },
     system: 'test system',
     store,
     session,
     initialMessages: options.initialMessages ?? [],
-    maxContext: 200_000,
     pricing: {},
     checkpoints: CheckpointStore.forWorkspace(dir),
   };

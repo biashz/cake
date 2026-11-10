@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FilePart, ModelMessage } from 'ai';
@@ -227,6 +227,33 @@ describe('exportSessionMarkdown', () => {
     expect(await readdir(path.dirname(file))).toHaveLength(1);
 
     store.close();
+  });
+
+  it('reads a relative destination as the workspace it belongs to', async () => {
+    const workspace = path.join(dir, 'workspace');
+    const launchedFrom = path.join(dir, 'launched-from');
+    await mkdir(workspace, { recursive: true });
+    await mkdir(launchedFrom, { recursive: true });
+    const store = SessionStore.open(path.join(workspace, 'cake.db'));
+    const meta = store.create({ cwd: workspace, provider: 'anthropic', model: 'm' });
+    store.saveMessages(meta.id, [{ role: 'user', content: 'the ask' }]);
+
+    // The program started somewhere else, which is what a desktop launcher, a
+    // `cd` in another shell tab, or a test worker can all do.
+    const previous = process.cwd();
+    process.chdir(launchedFrom);
+    try {
+      const written = exportSessionMarkdown(store, meta.id, 'notes/transcript.md');
+      expect(written.file).toBe(path.join(workspace, 'notes', 'transcript.md'));
+      expect(await readFile(written.file, 'utf8')).toContain('the ask');
+      await expect(readFile(path.join(launchedFrom, 'notes', 'transcript.md'))).rejects.toThrow();
+
+      const absolute = path.join(dir, 'elsewhere.md');
+      expect(exportSessionMarkdown(store, meta.id, absolute).file).toBe(absolute);
+    } finally {
+      process.chdir(previous);
+      store.close();
+    }
   });
 
   it('honours an explicit destination', async () => {

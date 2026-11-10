@@ -240,7 +240,9 @@ export function exportSessionMarkdown(
     plan: store.plan(sessionId),
   });
   const target = file
-    ? path.resolve(file)
+    ? // A relative path is relative to the workspace the session belongs to,
+      // not to whatever folder the program happened to start in.
+      path.resolve(meta.cwd, file)
     : path.join(meta.cwd, '.cake', 'exports', exportFileName(meta));
   const folder = path.dirname(target);
   mkdirSync(folder, { recursive: true });

@@ -56,7 +56,6 @@ export interface AppProps {
   store: SessionStore;
   session: SessionMeta;
   initialMessages: ModelMessage[];
-  maxContext: number;
   /** Rate-card additions from config; costs use them for every model. */
   pricing: PricingOverrides;
   /** Where each turn's file changes are archived, so /revert can undo them. */
@@ -78,7 +77,7 @@ function preview(value: unknown, max = 160): string {
 }
 
 export function App(props: AppProps) {
-  const { registry, cwd, rules, system, store, maxContext, pricing, checkpoints, embedder } = props;
+  const { registry, cwd, rules, system, store, pricing, checkpoints, embedder } = props;
   const mcpTools = props.mcpTools ?? [];
   const { exit } = useApp();
   const [model, setModel] = useState<ModelSpec>(props.model);
@@ -339,7 +338,9 @@ export function App(props: AppProps) {
         tools,
         history: historyRef.current,
         prompt: typed,
-        maxContext,
+        // Read as the turn starts, so a switch to a smaller model takes its own
+        // budget with it instead of compacting against the old one.
+        maxContext: registry.get(model.provider).capabilities(model.modelId).maxContext,
         pricing,
         checkpoints,
         embedder,
